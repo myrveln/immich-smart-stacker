@@ -1,0 +1,279 @@
+# Immich Smart Stacker
+
+Smart visual similarity grouping for Immich photos, designed for iPhone burst detection and similar photo sequences.
+
+## Features
+
+- **Temporal Clustering**: Groups photos taken within configurable time window (default: 2 seconds)
+- **Visual Similarity**: Uses perceptual hashing to group visually similar photos
+- **Burst Detection**: Ideal for iPhone burst sequences
+- **Dry Run Mode**: Preview changes before applying
+- **Multi-User Support**: Can be run per-user
+- **Docker Ready**: Includes a container image and publish workflow
+
+## Requirements
+
+- Python 3.8+
+- Dependencies listed in `requirements.txt`
+
+```bash
+pip install -r requirements.txt
+```
+
+For local testing and coverage:
+
+```bash
+pip install -r requirements-dev.txt
+pytest --cov=. --cov-report=term
+```
+
+## Setup
+
+### Python venv Setup (Recommended)
+
+```bash
+# From the smart-stacker directory
+python3 -m venv .venv
+source .venv/bin/activate
+
+# Install dependencies inside the venv
+pip install -r requirements.txt
+```
+
+Run commands with the active venv, or use the venv Python directly:
+
+```bash
+.venv/bin/python immich-smart-stacker.py --help
+```
+
+Deactivate when done:
+
+```bash
+deactivate
+```
+
+### Option 1: Local Execution
+
+```bash
+python immich-smart-stacker.py \
+  --api-url http://your-nas:2283 \
+  --api-key YOUR_API_KEY \
+  --temporal-window 2.0 \
+  --hash-threshold 8
+```
+
+### Option 2: Docker Container
+
+Run the published image with environment variables:
+
+```bash
+docker run --rm \
+  -e IMMICH_API_URL=http://your-nas:2283/api \
+  -e IMMICH_API_KEY=YOUR_API_KEY \
+  -e IMMICH_USER_FILTER=12345-abcde-67890-fghij \
+  -e TEMPORAL_WINDOW=30.0 \
+  -e HASH_THRESHOLD=12 \
+  -e INCLUDE_VIDEOS=true \
+  docker.io/YOUR_DOCKERHUB_USER/immich-smart-stacker:latest
+```
+
+For a persistent state cache, mount a volume at `/data`:
+
+```bash
+docker run --rm \
+  -v "$PWD/data:/data" \
+  -e IMMICH_API_URL=http://your-nas:2283/api \
+  -e IMMICH_API_KEY=YOUR_API_KEY \
+  docker.io/YOUR_DOCKERHUB_USER/immich-smart-stacker:latest
+```
+
+## Configuration
+
+### Command Line Arguments
+
+- `--api-url` (required unless `IMMICH_API_URL` is set): Immich API URL (e.g., `http://localhost:2283` or `http://localhost:2283/api`)
+- `--api-key` (required unless `IMMICH_API_KEY` is set): Immich API key with `asset:view`, `asset:read`, and `stack:*` permissions
+- `--user-filter`: Filter results to specific user ID (optional)
+- `--all-users`: Process all users returned by the API (by default, script auto-filters to current user)
+- `--temporal-window` (default: 2.0): Burst detection window in seconds
+  - iPhone bursts: ~0-10ms between frames; 2 seconds captures most bursts
+  - Adjust up if you want more lenient grouping
+- `--hash-threshold` (default: 8): Hamming distance threshold for visual similarity
+  - Lower = stricter matching (fewer false positives)
+  - 5-8 = good for burst detection (same motive, rapid succession)
+  - 10-15 = lenient (catches similar compositions)
+- `--dry-run`: Preview stacks without creating them
+- `--unstack-all`: Delete stacks instead of creating them (scoped by `--user-filter` when provided)
+- `--include-videos`: Also try hashing videos (disabled by default; image-only is more reliable)
+- `--verbose`: Enable debug logging
+
+Notes:
+- `--verbose` now focuses on script internals and avoids noisy low-level HTTP connection spam.
+- If your key can list metadata beyond assets it can read thumbnails for, default auto-filtering helps avoid repeated `403` thumbnail warnings.
+- Videos are skipped by default to avoid noisy `404` thumbnail misses on some media; use `--include-videos` to opt in.
+- Existing stacks are not treated as immutable: if a new run finds a larger matching group that intersects an existing stack, the script will merge/extend the stack.
+- In `--unstack-all` mode: with `--user-filter <userId>`, only that user's stacks are deleted; without `--user-filter`, stacks for all users are deleted.
+
+### iPhone Burst Patterns
+
+iPhones capture burst sequences with:
+- **Temporal spacing**: 0-10ms between frames (within one photo moment)
+- **Composition**: Nearly identical framing and content
+- **Default window**: 2 seconds catches all burst photos
+
+## Getting an API Key
+
+1. Log into Immich web UI
+2. Navigate to **Settings > API Keys**
+3. Create a new API key with permissions:
+  - `asset:view` (required for `/assets/{id}/thumbnail` access)
+  - `asset:read` (metadata/search)
+  - `stack:*` (to create/modify stacks)
+
+## Performance Notes
+
+- **Hash Computation**: Downloads thumbnails (~50-100KB each) for hashing
+- **Typical Runtime**: ~10-30 seconds for 1000 photos
+- **Recommended Interval**: 3600 seconds (1 hour) via cron or Docker scheduler
+- **Avoid**: Running too frequently (< 300s) to prevent unnecessary API load
+- **Minimum Stack Size**: Immich requires stacks to have at least 2 assets (1 primary + 1 secondary)
+
+## Example: Running for Specific User
+
+```bash
+# Get user ID from Immich (Settings > Profile or API response)
+python immich-smart-stacker.py \
+  --api-url http://nas:2283 \
+  --api-key YOUR_KEY \
+  --user-filter 12345-abcde-67890-fghij \
+  --dry-run  # First run with dry-run to preview
+```
+
+## Troubleshooting
+
+### "Failed to hash asset"
+- Network issue downloading thumbnail
+- Corrupted image file in Immich
+- Check logs with `--verbose`
+
+### "Connection refused"
+- Ensure Immich server is running and accessible
+- Check API URL host/port (script accepts both root URL and `/api` URL)
+- Verify firewall rules
+
+### "404 on /api/search/metadata"
+- Use the latest script version (it uses the correct metadata search method)
+- Keep using your API server URL (`http://<host>:2283` is recommended)
+- Verify the key has `asset:read` permission
+
+### "400 on /api/search/metadata" after upgrading to Immich 3.x
+- Immich 3.x validates metadata search payloads more strictly than older versions.
+- Use the latest script version: it now prefers `page`/`size` and auto-falls back for legacy servers.
+- If this persists, run with `--verbose` and check the first error response body for invalid fields.
+
+### Too many/few stacks created
+- Adjust `--hash-threshold`:
+  - Lower (5-6) for stricter similarity matching
+  - Higher (10-12) for more lenient grouping
+- Adjust `--temporal-window` (default 2.0s works for iPhones)
+
+### API Key Permissions Error
+- Regenerate API key with proper permissions
+- Ensure `asset:view`, `asset:read`, and `stack:*` are selected
+
+### Unstack everything
+```bash
+python immich-smart-stacker.py \
+  --api-url http://nas:2283 \
+  --api-key YOUR_KEY \
+  --unstack-all
+```
+
+For one user only:
+
+```bash
+python immich-smart-stacker.py \
+  --api-url http://nas:2283 \
+  --api-key YOUR_KEY \
+  --unstack-all \
+  --user-filter 12345-abcde-67890-fghij
+```
+
+### Repeated "401/403 thumbnail" messages
+- Your key can query metadata but cannot fetch many thumbnails.
+- Ensure API key includes `asset:view` (and `asset:read`).
+- Run without `--verbose` for minimal output, or with `--user-filter <ownerId>` to scope processing.
+
+## Comparison: Majorfi vs Smart Stacker
+
+| Feature | Majorfi | Smart Stacker |
+|---------|---------|---------------|
+| Filename matching | ✓ | ✗ (uses timestamps) |
+| Visual similarity | ✗ | ✓ (perceptual hash) |
+| Temporal grouping | Limited | ✓ (configurable) |
+| iPhone bursts | Needs filename pattern | ✓ (automatic) |
+| Regex support | ✓ | ✗ |
+
+**Recommendation**: Use Majorfi for RAW+JPG variants (filename-based), and Smart Stacker for burst detection (temporal + visual).
+
+## Security Notes
+
+- Store API keys in environment variables or `.env` file (never hardcode)
+- Use Doppler or similar secret management for production
+- Smart Stacker only reads assets and manages stacks; `--unstack-all` is the only delete mode
+
+## Environment Variables
+
+The Docker image reads these variables:
+
+- `IMMICH_API_URL`: Immich API base URL, usually ending in `/api`
+- `IMMICH_API_KEY`: Immich API key
+- `IMMICH_USER_FILTER`: Optional user ID filter
+- `TEMPORAL_WINDOW`: Optional temporal window in seconds
+- `HASH_THRESHOLD`: Optional visual similarity threshold
+- `INCLUDE_VIDEOS`: Set to `true` to enable video hashing
+- `DRY_RUN`: Set to `true` to preview only
+- `UNSTACK_ALL`: Set to `true` to delete all matching stacks
+- `SMART_STACKER_STATE_FILE`: Optional path for the local idempotency cache
+
+## Docker Hub Publishing
+
+The repository includes a GitHub Actions workflow that builds and pushes a multi-architecture image to Docker Hub.
+
+Required secrets:
+
+- `DOCKERHUB_USERNAME`
+- `DOCKERHUB_TOKEN`
+
+The published image name is `docker.io/<username>/immich-smart-stacker`.
+
+## Testing and Coverage
+
+The repository includes a GitHub Actions test workflow that runs pytest with coverage, writes a coverage summary to the job summary, and uploads `tests/coverage.xml` as an artifact.
+
+If you want Codecov reporting, add a `CODECOV_TOKEN` repository secret.
+
+## Release Flow
+
+Releases are automated after the test workflow succeeds on `master` or `main`.
+
+### Versioning
+
+This project uses Semantic Versioning: `MAJOR.MINOR.PATCH`.
+
+### How to steer the bump
+
+Add exactly one of these labels to the merged PR:
+
+- `release:patch`
+- `release:minor`
+- `release:major`
+- `release:none` to skip creating a release
+
+When the release workflow runs, it creates:
+
+1. A canonical SemVer tag like `v1.2.3`
+2. A branch alias tag like `master-v1.2.3` or `main-v1.2.3`
+3. A GitHub Release for the canonical tag
+
+If no PR labels are available, the workflow falls back to the commit message markers `release:patch`, `release:minor`, `release:major`, or `release:none`.

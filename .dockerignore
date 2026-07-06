@@ -1,0 +1,12 @@
+.git
+.github
+.venv
+__pycache__
+.pytest_cache
+.mypy_cache
+.ruff_cache
+.immich-smart-stacker-state.json
+*.pyc
+*.pyo
+*.pyd
+.DS_Store
