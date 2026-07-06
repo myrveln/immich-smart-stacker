@@ -24,7 +24,7 @@ For local testing and coverage:
 
 ```bash
 pip install -r requirements-dev.txt
-pytest --cov=. --cov-report=term
+pytest tests --cov=immich_smart_stacker --cov-report=term
 ```
 
 ## Setup

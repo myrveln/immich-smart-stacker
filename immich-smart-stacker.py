@@ -14,7 +14,7 @@ import json
 
 try:
     import requests
-except ImportError:
+except ImportError:  # pragma: no cover
     print("ERROR: requests library required. Install with: pip install requests")
     sys.exit(1)
 
@@ -22,7 +22,7 @@ try:
     import imagehash
     from PIL import Image
     from io import BytesIO
-except ImportError:
+except ImportError:  # pragma: no cover
     print("ERROR: PIL and imagehash libraries required. Install with: pip install Pillow imagehash")
     sys.exit(1)
 
@@ -858,5 +858,5 @@ def main():
         return 1
 
 
-if __name__ == '__main__':
+if __name__ == '__main__':  # pragma: no cover
     sys.exit(main())

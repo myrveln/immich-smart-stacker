@@ -26,7 +26,7 @@ jobs:
 
       - name: Run tests
         run: |
-          pytest --cov=. --cov-report=term --cov-report=xml:tests/coverage.xml
+          pytest tests --cov=immich_smart_stacker --cov-report=term --cov-report=xml:tests/coverage.xml
 
       - name: Coverage summary
         if: always()
