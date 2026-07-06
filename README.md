@@ -219,7 +219,6 @@ python immich-smart-stacker.py \
 ## Security Notes
 
 - Store API keys in environment variables or `.env` file (never hardcode)
-- Use Doppler or similar secret management for production
 - Smart Stacker only reads assets and manages stacks; `--unstack-all` is the only delete mode
 
 ## Environment Variables
@@ -239,8 +238,6 @@ The Docker image reads these variables:
 ## Testing and Coverage
 
 The repository includes a GitHub Actions test workflow that runs pytest with coverage, writes a coverage summary to the job summary, and uploads `tests/coverage.xml` as an artifact.
-
-If you want Codecov reporting, add a `CODECOV_TOKEN` repository secret.
 
 ## Release Flow
 
