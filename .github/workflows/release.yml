@@ -12,6 +12,7 @@ concurrency:
 permissions:
   contents: write
   pull-requests: read
+  actions: write
 
 jobs:
   release:
@@ -127,7 +128,6 @@ jobs:
           fi
 
           next_tag="v${next_version}"
-          branch_tag="${{ github.event.workflow_run.head_branch }}-${next_tag}"
 
           IFS='.' read -r next_major next_minor next_patch <<<"$next_version"
           if [[ "$next_major" -eq 0 && "$next_minor" -eq 0 ]]; then
@@ -141,26 +141,17 @@ jobs:
             exit 1
           fi
 
-          if git rev-parse -q --verify "refs/tags/${branch_tag}" >/dev/null; then
-            echo "Tag already exists: ${branch_tag}" >&2
-            exit 1
-          fi
-
           echo "version=${next_version}" >> "$GITHUB_OUTPUT"
           echo "tag=${next_tag}" >> "$GITHUB_OUTPUT"
-          echo "branch_tag=${branch_tag}" >> "$GITHUB_OUTPUT"
           echo "prerelease=${prerelease}" >> "$GITHUB_OUTPUT"
 
-      - name: Create and push tags
+      - name: Create and push tag
         if: ${{ steps.bump.outputs.skip != 'true' }}
         shell: bash
-        env:
-          BRANCH_NAME: ${{ github.event.workflow_run.head_branch }}
         run: |
           set -euo pipefail
 
           tag="${{ steps.version.outputs.tag }}"
-          branch_tag="${{ steps.version.outputs.branch_tag }}"
           version="${{ steps.version.outputs.version }}"
           sha="${{ github.event.workflow_run.head_sha }}"
 
@@ -168,8 +159,7 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
           git tag -a "$tag" "$sha" -m "Release $version"
-          git tag -a "$branch_tag" "$sha" -m "Release $version ($BRANCH_NAME)"
-          git push origin "$tag" "$branch_tag"
+          git push origin "$tag"
 
       - name: Create GitHub Release
         if: ${{ steps.bump.outputs.skip != 'true' }}
@@ -178,3 +168,13 @@ jobs:
           tag_name: ${{ steps.version.outputs.tag }}
           generate_release_notes: true
           prerelease: ${{ steps.version.outputs.prerelease }}
+
+      - name: Trigger Docker publish workflow
+        if: ${{ steps.bump.outputs.skip != 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh workflow run docker-publish.yml -f tag="$TAG"
