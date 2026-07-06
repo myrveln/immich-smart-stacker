@@ -56,7 +56,7 @@ deactivate
 
 ```bash
 python immich-smart-stacker.py \
-  --api-url http://your-nas:2283 \
+  --api-url http://127.0.0.1:2283 \
   --api-key YOUR_API_KEY \
   --temporal-window 2.0 \
   --hash-threshold 8
@@ -68,7 +68,7 @@ Run the published image with environment variables:
 
 ```bash
 docker run --rm \
-  -e IMMICH_API_URL=http://your-nas:2283/api \
+  -e IMMICH_API_URL=http://127.0.0.1:2283/api \
   -e IMMICH_API_KEY=YOUR_API_KEY \
   -e IMMICH_USER_FILTER=12345-abcde-67890-fghij \
   -e TEMPORAL_WINDOW=30.0 \
@@ -82,7 +82,7 @@ For a persistent state cache, mount a volume at `/data`:
 ```bash
 docker run --rm \
   -v "$PWD/data:/data" \
-  -e IMMICH_API_URL=http://your-nas:2283/api \
+  -e IMMICH_API_URL=http://127.0.0.1:2283/api \
   -e IMMICH_API_KEY=YOUR_API_KEY \
   docker.io/YOUR_DOCKERHUB_USER/immich-smart-stacker:latest
 ```
@@ -143,7 +143,7 @@ iPhones capture burst sequences with:
 ```bash
 # Get user ID from Immich (Settings > Profile or API response)
 python immich-smart-stacker.py \
-  --api-url http://nas:2283 \
+  --api-url http://127.0.0.1:2283 \
   --api-key YOUR_KEY \
   --user-filter 12345-abcde-67890-fghij \
   --dry-run  # First run with dry-run to preview
@@ -184,7 +184,7 @@ python immich-smart-stacker.py \
 ### Unstack everything
 ```bash
 python immich-smart-stacker.py \
-  --api-url http://nas:2283 \
+  --api-url http://127.0.0.1:2283 \
   --api-key YOUR_KEY \
   --unstack-all
 ```
@@ -193,7 +193,7 @@ For one user only:
 
 ```bash
 python immich-smart-stacker.py \
-  --api-url http://nas:2283 \
+  --api-url http://127.0.0.1:2283 \
   --api-key YOUR_KEY \
   --unstack-all \
   --user-filter 12345-abcde-67890-fghij
@@ -236,17 +236,6 @@ The Docker image reads these variables:
 - `UNSTACK_ALL`: Set to `true` to delete all matching stacks
 - `SMART_STACKER_STATE_FILE`: Optional path for the local idempotency cache
 
-## Docker Hub Publishing
-
-The repository includes a GitHub Actions workflow that builds and pushes a multi-architecture image to Docker Hub.
-
-Required secrets:
-
-- `DOCKERHUB_USERNAME`
-- `DOCKERHUB_TOKEN`
-
-The published image name is `docker.io/<username>/immich-smart-stacker`.
-
 ## Testing and Coverage
 
 The repository includes a GitHub Actions test workflow that runs pytest with coverage, writes a coverage summary to the job summary, and uploads `tests/coverage.xml` as an artifact.
@@ -255,25 +244,8 @@ If you want Codecov reporting, add a `CODECOV_TOKEN` repository secret.
 
 ## Release Flow
 
-Releases are automated after the test workflow succeeds on `master` or `main`.
+Releases are automated after the test workflow succeeds on `master`.
 
 ### Versioning
 
 This project uses Semantic Versioning: `MAJOR.MINOR.PATCH`.
-
-### How to steer the bump
-
-Add exactly one of these labels to the merged PR:
-
-- `release:patch`
-- `release:minor`
-- `release:major`
-- `release:none` to skip creating a release
-
-When the release workflow runs, it creates:
-
-1. A canonical SemVer tag like `v1.2.3`
-2. A branch alias tag like `master-v1.2.3` or `main-v1.2.3`
-3. A GitHub Release for the canonical tag
-
-If no PR labels are available, the workflow falls back to the commit message markers `release:patch`, `release:minor`, `release:major`, or `release:none`.
