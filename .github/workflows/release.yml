@@ -1,0 +1,180 @@
+name: Release
+
+on:
+  workflow_run:
+    workflows: ["Smart Stacker Tests"]
+    types: [completed]
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  pull-requests: read
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    if: ${{ github.event.workflow_run.conclusion == 'success' && (github.event.workflow_run.head_branch == 'master' || github.event.workflow_run.head_branch == 'main') }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.workflow_run.head_sha }}
+
+      - name: Decide release bump
+        id: bump
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ github.event.workflow_run.head_sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          prs_json="$(gh api -H 'Accept: application/vnd.github+json' "/repos/${GITHUB_REPOSITORY}/commits/${SHA}/pulls" 2>/dev/null || echo '[]')"
+          commit_msg="$(git log -1 --pretty=%B)"
+
+          PRS_JSON="$prs_json" COMMIT_MSG="$commit_msg" python - <<'PY'
+          import json
+          import os
+
+          prs = json.loads(os.environ.get("PRS_JSON", "[]")) or []
+          commit_msg = (os.environ.get("COMMIT_MSG") or "").lower()
+
+          labels = set()
+          for pr in prs:
+            for lab in pr.get("labels", []) or []:
+              name = lab.get("name")
+              if name:
+                labels.add(name)
+
+          def pick_from_labels(labels: set[str]):
+            if "release:none" in labels or "skip-release" in labels:
+              return (True, "patch")
+            if "release:major" in labels:
+              return (False, "major")
+            if "release:minor" in labels:
+              return (False, "minor")
+            if "release:patch" in labels:
+              return (False, "patch")
+            return (False, "")
+
+          def pick_from_commit(msg: str):
+            if "release:none" in msg or "[skip release]" in msg or "skip release" in msg:
+              return (True, "patch")
+            if "release:major" in msg:
+              return (False, "major")
+            if "release:minor" in msg:
+              return (False, "minor")
+            if "release:patch" in msg:
+              return (False, "patch")
+            return (False, "")
+
+          skip, bump = pick_from_labels(labels)
+          source = "pr-labels" if bump or skip else ""
+
+          if not bump and not skip:
+            skip, bump = pick_from_commit(commit_msg)
+            if bump or skip:
+              source = "commit-message"
+
+          if not bump and not skip:
+            skip = True
+            bump = "patch"
+            source = source or "default-skip"
+
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as f:
+            f.write(f"skip={'true' if skip else 'false'}\n")
+            f.write(f"bump={bump}\n")
+            f.write(f"source={source}\n")
+          PY
+
+      - name: Compute next version
+        id: version
+        if: ${{ steps.bump.outputs.skip != 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          bump="${{ steps.bump.outputs.bump }}"
+
+          latest_version="$({
+            git tag --list \
+              | grep -E '^v?[0-9]+\.[0-9]+\.[0-9]+$' \
+              | sed 's/^v//' \
+              | sort -V \
+              | tail -n 1
+          } 2>/dev/null || true)"
+
+          if [[ -z "$latest_version" ]]; then
+            next_version="0.0.1"
+          else
+            IFS='.' read -r major minor patch <<<"$latest_version"
+            case "$bump" in
+              major)
+                next_version="$((major + 1)).0.0"
+                ;;
+              minor)
+                next_version="${major}.$((minor + 1)).0"
+                ;;
+              patch|*)
+                next_version="${major}.${minor}.$((patch + 1))"
+                ;;
+            esac
+          fi
+
+          next_tag="v${next_version}"
+          branch_tag="${{ github.event.workflow_run.head_branch }}-${next_tag}"
+
+          IFS='.' read -r next_major next_minor next_patch <<<"$next_version"
+          if [[ "$next_major" -eq 0 && "$next_minor" -eq 0 ]]; then
+            prerelease="true"
+          else
+            prerelease="false"
+          fi
+
+          if git rev-parse -q --verify "refs/tags/${next_tag}" >/dev/null; then
+            echo "Tag already exists: ${next_tag}" >&2
+            exit 1
+          fi
+
+          if git rev-parse -q --verify "refs/tags/${branch_tag}" >/dev/null; then
+            echo "Tag already exists: ${branch_tag}" >&2
+            exit 1
+          fi
+
+          echo "version=${next_version}" >> "$GITHUB_OUTPUT"
+          echo "tag=${next_tag}" >> "$GITHUB_OUTPUT"
+          echo "branch_tag=${branch_tag}" >> "$GITHUB_OUTPUT"
+          echo "prerelease=${prerelease}" >> "$GITHUB_OUTPUT"
+
+      - name: Create and push tags
+        if: ${{ steps.bump.outputs.skip != 'true' }}
+        shell: bash
+        env:
+          BRANCH_NAME: ${{ github.event.workflow_run.head_branch }}
+        run: |
+          set -euo pipefail
+
+          tag="${{ steps.version.outputs.tag }}"
+          branch_tag="${{ steps.version.outputs.branch_tag }}"
+          version="${{ steps.version.outputs.version }}"
+          sha="${{ github.event.workflow_run.head_sha }}"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          git tag -a "$tag" "$sha" -m "Release $version"
+          git tag -a "$branch_tag" "$sha" -m "Release $version ($BRANCH_NAME)"
+          git push origin "$tag" "$branch_tag"
+
+      - name: Create GitHub Release
+        if: ${{ steps.bump.outputs.skip != 'true' }}
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          generate_release_notes: true
+          prerelease: ${{ steps.version.outputs.prerelease }}
