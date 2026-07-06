@@ -2,6 +2,8 @@
 
 Smart visual similarity grouping for Immich photos, designed for iPhone burst detection and similar photo sequences.
 
+Repository: [myrveln/immich-smart-stacker](https://github.com/myrveln/immich-smart-stacker)
+
 ## Features
 
 - **Temporal Clustering**: Groups photos taken within configurable time window (default: 2 seconds)
@@ -29,7 +31,70 @@ pytest tests --cov=immich_smart_stacker --cov-report=term
 
 ## Setup
 
-### Python venv Setup (Recommended)
+### Option 1: Docker (Recommended)
+
+Docker is the recommended way to run Immich Smart Stacker.
+
+Run the published image with environment variables:
+
+```bash
+docker run --rm \
+  -e IMMICH_API_URL=http://127.0.0.1:2283/api \
+  -e IMMICH_API_KEY=YOUR_API_KEY \
+  -e IMMICH_USER_FILTER=12345-abcde-67890-fghij \
+  -e TEMPORAL_WINDOW=30.0 \
+  -e HASH_THRESHOLD=12 \
+  -e INCLUDE_VIDEOS=true \
+  docker.io/myrveln/immich-smart-stacker:latest
+```
+
+For a persistent state cache, mount a volume at `/data`:
+
+```bash
+docker run --rm \
+  -v "$PWD/data:/data" \
+  -e IMMICH_API_URL=http://127.0.0.1:2283/api \
+  -e IMMICH_API_KEY=YOUR_API_KEY \
+  docker.io/myrveln/immich-smart-stacker:latest
+```
+
+### Add to Existing docker-compose.yml
+
+If you already run Immich with Docker Compose, add this service to your existing `docker-compose.yml` under `services:`:
+
+```yaml
+  immich-smart-stacker:
+    image: docker.io/myrveln/immich-smart-stacker:latest
+    container_name: immich-smart-stacker
+    restart: "no"
+    environment:
+      IMMICH_API_URL: http://immich-server:2283/api
+      IMMICH_API_KEY: ${IMMICH_API_KEY}
+      # Optional tuning
+      # IMMICH_USER_FILTER: "12345-abcde-67890-fghij"
+      # TEMPORAL_WINDOW: "30.0"
+      # HASH_THRESHOLD: "12"
+      # INCLUDE_VIDEOS: "true"
+      # DRY_RUN: "true"
+      # UNSTACK_ALL: "false"
+    volumes:
+      - ./immich-smart-stacker-data:/data
+```
+
+Notes:
+- `IMMICH_API_URL` uses the Immich server container name on the same Compose network (`immich-server` is the default service name in many Immich setups).
+- Put `IMMICH_API_KEY` in your `.env` file next to `docker-compose.yml`.
+- Create a key in Immich with `asset:view`, `asset:read`, and `stack:*` permissions.
+
+Start or update the service:
+
+```bash
+docker compose up -d immich-smart-stacker
+```
+
+See the [Docker](#docker) section for image links and pull details.
+
+### Option 2: Python venv Setup (Local)
 
 ```bash
 # From the smart-stacker directory
@@ -52,7 +117,7 @@ Deactivate when done:
 deactivate
 ```
 
-### Option 1: Local Execution
+### Option 3: Local Execution
 
 ```bash
 python immich-smart-stacker.py \
@@ -62,29 +127,14 @@ python immich-smart-stacker.py \
   --hash-threshold 8
 ```
 
-### Option 2: Docker Container
+## Docker
 
-Run the published image with environment variables:
+Docker Hub: [dockerhub/myrveln/immich-smart-stacker](https://hub.docker.com/r/myrveln/immich-smart-stacker)
 
-```bash
-docker run --rm \
-  -e IMMICH_API_URL=http://127.0.0.1:2283/api \
-  -e IMMICH_API_KEY=YOUR_API_KEY \
-  -e IMMICH_USER_FILTER=12345-abcde-67890-fghij \
-  -e TEMPORAL_WINDOW=30.0 \
-  -e HASH_THRESHOLD=12 \
-  -e INCLUDE_VIDEOS=true \
-  docker.io/YOUR_DOCKERHUB_USER/immich-smart-stacker:latest
-```
-
-For a persistent state cache, mount a volume at `/data`:
+Pull latest image:
 
 ```bash
-docker run --rm \
-  -v "$PWD/data:/data" \
-  -e IMMICH_API_URL=http://127.0.0.1:2283/api \
-  -e IMMICH_API_KEY=YOUR_API_KEY \
-  docker.io/YOUR_DOCKERHUB_USER/immich-smart-stacker:latest
+docker pull docker.io/myrveln/immich-smart-stacker:latest
 ```
 
 ## Configuration
