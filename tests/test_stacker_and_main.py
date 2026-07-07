@@ -63,6 +63,13 @@ def test_state_file_load_save_and_run_key(tmp_path):
     assert "abc" in s2.seen_signatures
 
 
+def test_run_key_changes_with_scope():
+    c = FakeClient()
+    s1 = SmartStacker(c, run_scope="u1")
+    s2 = SmartStacker(c, run_scope="u2")
+    assert s1.run_key != s2.run_key
+
+
 def test_load_state_failure_is_ignored(tmp_path):
     f = tmp_path / "bad.json"
     f.write_text("not-json")
@@ -101,7 +108,11 @@ def test_compute_hash_paths(monkeypatch, sample_assets):
     assert s.compute_hash(video) is None
 
     c.get_asset_thumbnail = lambda _id: None
+    c.last_thumbnail_status = 403
     assert s.compute_hash(sample_assets[0]) is None
+    assert s.inaccessible_assets_count == 1
+    assert s.inaccessible_by_user["u1"] == 1
+    assert s.inaccessible_by_status["403"] == 1
 
     def explode(*_args, **_kwargs):
         raise RuntimeError("x")

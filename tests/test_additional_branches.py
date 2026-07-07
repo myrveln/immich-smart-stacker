@@ -7,12 +7,13 @@ from tests._module import Asset, ImmichClient, SmartStacker, main
 
 
 class DummyResp:
-    def __init__(self, status_code=200, payload=None, text="", raises=None):
+    def __init__(self, status_code=200, payload=None, text="", raises=None, headers=None):
         self.status_code = status_code
         self._payload = {} if payload is None else payload
         self.text = text
         self._raises = raises
         self.content = b""
+        self.headers = headers or {}
 
     def json(self):
         if isinstance(self._payload, Exception):
@@ -35,6 +36,14 @@ class DummySession:
 
     def get(self, _url, params=None):
         return self.get_responses.pop(0)
+
+    def request(self, method, url, timeout=None, **kwargs):
+        method_upper = method.upper()
+        if method_upper == "POST":
+            return self.post(url, json=kwargs.get("json"))
+        if method_upper == "GET":
+            return self.get(url, params=kwargs.get("params"))
+        raise AssertionError(f"Unsupported method in test double: {method}")
 
 
 class FakeClient:
@@ -169,6 +178,7 @@ def test_thumbnail_permission_warning_generic_message_and_500_no_raise():
     assert c.get_asset_thumbnail("x") is None
 
     c2 = ImmichClient("http://x", "k")
+    c2.max_retries = 0
     s2 = DummySession()
     s2.get_responses = [DummyResp(status_code=500, payload={})]
     c2.session = s2
