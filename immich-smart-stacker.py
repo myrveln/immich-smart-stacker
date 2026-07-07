@@ -6,6 +6,7 @@ import hashlib
 import logging
 import os
 import sys
+import time
 from datetime import datetime, timedelta
 from typing import Dict, List, Tuple, Optional, Any, Set
 from dataclasses import dataclass
@@ -59,13 +60,64 @@ class Asset:
 class ImmichClient:
     """Minimal Immich API client."""
 
-    def __init__(self, api_url: str, api_key: str):
+    RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
+
+    def __init__(
+        self,
+        api_url: str,
+        api_key: str,
+        request_timeout: float = 30.0,
+        max_retries: int = 3,
+        retry_backoff: float = 0.5,
+    ):
         self.api_url = self._normalize_api_url(api_url)
         self.api_key = api_key
         self.session = requests.Session()
         self.session.headers.update({'x-api-key': api_key})
+        self.request_timeout = request_timeout
+        self.max_retries = max(0, max_retries)
+        self.retry_backoff = max(0.0, retry_backoff)
         self._me_user_id: Optional[str] = None
         self._thumbnail_permission_warning_emitted = False
+        self.last_thumbnail_status: Optional[int] = None
+
+    def _request(self, method: str, url: str, **kwargs) -> requests.Response:
+        """Issue HTTP request with timeout, retries and exponential backoff."""
+        attempts = self.max_retries + 1
+
+        for attempt in range(1, attempts + 1):
+            try:
+                response = self.session.request(method, url, timeout=self.request_timeout, **kwargs)
+            except requests.RequestException as exc:
+                if attempt >= attempts:
+                    raise
+                delay = self.retry_backoff * (2 ** (attempt - 1))
+                logger.debug(
+                    f"HTTP request error on {method} {url}: {exc}. "
+                    f"Retrying in {delay:.2f}s ({attempt}/{attempts})"
+                )
+                if delay > 0:
+                    time.sleep(delay)
+                continue
+
+            if response.status_code in self.RETRYABLE_STATUS_CODES and attempt < attempts:
+                retry_after = response.headers.get('Retry-After')
+                if retry_after and str(retry_after).isdigit():
+                    delay = float(retry_after)
+                else:
+                    delay = self.retry_backoff * (2 ** (attempt - 1))
+
+                logger.debug(
+                    f"HTTP {response.status_code} on {method} {url}. "
+                    f"Retrying in {delay:.2f}s ({attempt}/{attempts})"
+                )
+                if delay > 0:
+                    time.sleep(delay)
+                continue
+
+            return response
+
+        raise RuntimeError(f"Unreachable retry loop for {method} {url}")
 
     @staticmethod
     def _normalize_api_url(api_url: str) -> str:
@@ -80,7 +132,7 @@ class ImmichClient:
         url = f"{self.api_url}/search/metadata"
 
         # Immich metadata search is POST in current versions.
-        resp = self.session.post(url, json=payload)
+        resp = self._request('POST', url, json=payload)
         if resp.status_code < 400:
             return resp
 
@@ -90,7 +142,7 @@ class ImmichClient:
             compact_payload = dict(payload)
             compact_payload.pop('skip', None)
             compact_payload.pop('take', None)
-            retry = self.session.post(url, json=compact_payload)
+            retry = self._request('POST', url, json=compact_payload)
             if retry.status_code < 400:
                 logger.debug("Metadata search succeeded after removing legacy skip/take fields")
                 return retry
@@ -102,14 +154,14 @@ class ImmichClient:
             legacy_payload = dict(payload)
             legacy_payload['take'] = take
             legacy_payload['skip'] = (max(page_for_math, 1) - 1) * take
-            retry = self.session.post(url, json=legacy_payload)
+            retry = self._request('POST', url, json=legacy_payload)
             if retry.status_code < 400:
                 logger.debug("Metadata search succeeded after adding legacy skip/take fields")
                 return retry
 
         # Fallback compatibility for variants/proxies that expose GET.
         if resp.status_code in (404, 405):
-            fallback = self.session.get(url, params=payload)
+            fallback = self._request('GET', url, params=payload)
             if fallback.status_code < 400:
                 return fallback
 
@@ -247,7 +299,7 @@ class ImmichClient:
             return self._me_user_id
 
         try:
-            resp = self.session.get(f"{self.api_url}/users/me")
+            resp = self._request('GET', f"{self.api_url}/users/me")
             resp.raise_for_status()
             body = resp.json()
             self._me_user_id = body.get('id')
@@ -258,12 +310,16 @@ class ImmichClient:
 
     def get_asset_thumbnail(self, asset_id: str) -> Optional[Image.Image]:
         """Download thumbnail for an asset."""
+        self.last_thumbnail_status = None
+
         # Prefer preview for better hash quality, then fallback to thumbnail.
         for size in ('preview', 'thumbnail'):
-            resp = self.session.get(
+            resp = self._request(
+                'GET',
                 f"{self.api_url}/assets/{asset_id}/thumbnail",
                 params={'size': size}
             )
+            self.last_thumbnail_status = resp.status_code
 
             # Asset media may not be generated/available yet (common for some videos).
             if resp.status_code == 404:
@@ -306,7 +362,7 @@ class ImmichClient:
             'assetIds': [primary_asset_id] + stacked_asset_ids
         }
 
-        resp = self.session.post(f"{self.api_url}/stacks", json=payload)
+        resp = self._request('POST', f"{self.api_url}/stacks", json=payload)
 
         if resp.status_code == 201:
             logger.info(f"Created stack: {primary_asset_id} + {len(stacked_asset_ids)} assets")
@@ -317,7 +373,7 @@ class ImmichClient:
 
     def delete_stack(self, stack_id: str) -> bool:
         """Delete a single stack by id."""
-        resp = self.session.delete(f"{self.api_url}/stacks/{stack_id}")
+        resp = self._request('DELETE', f"{self.api_url}/stacks/{stack_id}")
 
         if resp.status_code == 204:
             return True
@@ -342,7 +398,7 @@ class ImmichClient:
 
     def get_stacks(self) -> List[Dict[str, Any]]:
         """Get detailed stack list with ids, asset ids, primary id and owner id."""
-        resp = self.session.get(f"{self.api_url}/stacks")
+        resp = self._request('GET', f"{self.api_url}/stacks")
         resp.raise_for_status()
 
         stacks: List[Dict[str, Any]] = []
@@ -385,19 +441,22 @@ class SmartStacker:
 
     def __init__(self, client: ImmichClient, temporal_window: float = 2.0,
                  hash_threshold: int = 8, dry_run: bool = False, include_videos: bool = False,
-                 state_file: Optional[Path] = None, run_key: Optional[str] = None):
+                 state_file: Optional[Path] = None, run_key: Optional[str] = None,
+                 run_scope: Optional[str] = None):
         self.client = client
         self.temporal_window = timedelta(seconds=temporal_window)
         self.hash_threshold = hash_threshold
         self.dry_run = dry_run
         self.include_videos = include_videos
         self.state_file = state_file
+        self.run_scope = run_scope if run_scope is not None else '__all_users__'
         self.run_key = run_key or self._build_run_key()
         self.hashes: Dict[str, str] = {}
         self.existing_stacks = client.get_existing_stacks()
         self.inaccessible_assets_count = 0
         self.inaccessible_assets_logged = 0
         self.inaccessible_by_user: Dict[str, int] = {}
+        self.inaccessible_by_status: Dict[str, int] = {}
         self.seen_signatures: Set[str] = self._load_seen_signatures()
         self.seen_signatures.update(
             self._signature(stack_assets)
@@ -407,8 +466,19 @@ class SmartStacker:
 
     def _build_run_key(self) -> str:
         """Create a stable key for the current run configuration."""
-        material = f"{self.client.api_url}|{self.temporal_window.total_seconds()}|{self.hash_threshold}|{int(self.include_videos)}"
+        material = (
+            f"{self.client.api_url}|{self.temporal_window.total_seconds()}|{self.hash_threshold}|"
+            f"{int(self.include_videos)}|scope:{self.run_scope}"
+        )
         return hashlib.sha1(material.encode('utf-8')).hexdigest()
+
+    def _record_unhashable_asset(self, asset: Asset, status_code: Optional[int]) -> None:
+        """Track assets that cannot be hashed due to thumbnail availability/access."""
+        self.inaccessible_assets_count += 1
+        self.inaccessible_by_user[asset.userId] = self.inaccessible_by_user.get(asset.userId, 0) + 1
+
+        status_key = str(status_code) if status_code is not None else 'unknown'
+        self.inaccessible_by_status[status_key] = self.inaccessible_by_status.get(status_key, 0) + 1
 
     def _load_seen_signatures(self) -> Set[str]:
         """Load previously processed stack signatures for this configuration."""
@@ -466,6 +536,7 @@ class SmartStacker:
         try:
             thumbnail = self.client.get_asset_thumbnail(asset.id)
             if thumbnail is None:
+                self._record_unhashable_asset(asset, self.client.last_thumbnail_status)
                 # Avoid flooding logs in large libraries.
                 if self.inaccessible_assets_logged < 10:
                     logger.debug(f"Skipping hash for unhashable asset: {asset.fileName} ({asset.id})")
@@ -708,14 +779,17 @@ class SmartStacker:
 
         if self.inaccessible_assets_count:
             logger.warning(
-                f"Skipped {self.inaccessible_assets_count} assets due to thumbnail access restrictions (401/403)."
+                f"Skipped {self.inaccessible_assets_count} assets due to thumbnail access/unavailability."
             )
             top_users = sorted(self.inaccessible_by_user.items(), key=lambda kv: kv[1], reverse=True)[:5]
             top_users_text = ', '.join([f"{uid}:{count}" for uid, count in top_users])
+            top_statuses = sorted(self.inaccessible_by_status.items(), key=lambda kv: kv[1], reverse=True)
+            top_statuses_text = ', '.join([f"{code}:{count}" for code, count in top_statuses])
             logger.warning(
                 "Inaccessible asset owner distribution (top 5): "
                 f"{top_users_text}. Consider --user-filter <ownerId> to scope processing."
             )
+            logger.warning(f"Unhashable thumbnail status distribution: {top_statuses_text}")
             if assets and (self.inaccessible_assets_count / len(assets)) > 0.2:
                 logger.warning(
                     "High inaccessible ratio detected. Verify API key permissions include asset.view "
@@ -846,6 +920,7 @@ def main():
             dry_run=args.dry_run,
             include_videos=args.include_videos,
             state_file=Path(args.state_file),
+            run_scope=effective_user_filter if effective_user_filter else '__all_users__',
         )
 
         stacks_created = stacker.run(assets, user_filter=effective_user_filter)
