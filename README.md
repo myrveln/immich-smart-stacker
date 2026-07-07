@@ -1,5 +1,7 @@
 # Immich Smart Stacker
 
+[![codecov](https://codecov.io/gh/myrveln/immich-smart-stacker/branch/master/graph/badge.svg)](https://app.codecov.io/gh/myrveln/immich-smart-stacker)
+
 Smart visual similarity grouping for Immich photos, designed for iPhone burst detection and similar photo sequences.
 
 ## Features
@@ -9,6 +11,7 @@ Smart visual similarity grouping for Immich photos, designed for iPhone burst de
 - **Burst Detection**: Ideal for iPhone burst sequences
 - **Dry Run Mode**: Preview changes before applying
 - **Multi-User Support**: Can be run per-user
+- **Resilient API Calls**: Built-in timeout and retry/backoff for transient API failures
 - **Docker Ready**: Includes a container image and publish workflow
 
 ## Requirements
@@ -29,40 +32,9 @@ pytest tests --cov=immich_smart_stacker --cov-report=term
 
 ## Setup
 
-### Python venv Setup (Recommended)
+### Run with Docker
 
-```bash
-# From the smart-stacker directory
-python3 -m venv .venv
-source .venv/bin/activate
-
-# Install dependencies inside the venv
-pip install -r requirements.txt
-```
-
-Run commands with the active venv, or use the venv Python directly:
-
-```bash
-.venv/bin/python immich-smart-stacker.py --help
-```
-
-Deactivate when done:
-
-```bash
-deactivate
-```
-
-### Option 1: Local Execution
-
-```bash
-python immich-smart-stacker.py \
-  --api-url http://127.0.0.1:2283 \
-  --api-key YOUR_API_KEY \
-  --temporal-window 2.0 \
-  --hash-threshold 8
-```
-
-### Option 2: Docker Container
+Docker is the recommended way to run Immich Smart Stacker.
 
 Run the published image with environment variables:
 
@@ -74,7 +46,7 @@ docker run --rm \
   -e TEMPORAL_WINDOW=30.0 \
   -e HASH_THRESHOLD=12 \
   -e INCLUDE_VIDEOS=true \
-  docker.io/YOUR_DOCKERHUB_USER/immich-smart-stacker:latest
+  docker.io/myrveln/immich-smart-stacker:latest
 ```
 
 For a persistent state cache, mount a volume at `/data`:
@@ -84,7 +56,76 @@ docker run --rm \
   -v "$PWD/data:/data" \
   -e IMMICH_API_URL=http://127.0.0.1:2283/api \
   -e IMMICH_API_KEY=YOUR_API_KEY \
-  docker.io/YOUR_DOCKERHUB_USER/immich-smart-stacker:latest
+  docker.io/myrveln/immich-smart-stacker:latest
+```
+
+### Run with docker-compose
+
+If you already run Immich with Docker Compose, add this service to your existing `docker-compose.yml` under `services:`:
+
+```yaml
+  immich-smart-stacker:
+    image: docker.io/myrveln/immich-smart-stacker:latest
+    container_name: immich-smart-stacker
+    restart: "no"
+    environment:
+      IMMICH_API_URL: http://immich-server:2283/api
+      IMMICH_API_KEY: ${IMMICH_API_KEY}
+      # Optional tuning
+      # IMMICH_USER_FILTER: "12345-abcde-67890-fghij"
+      # TEMPORAL_WINDOW: "30.0"
+      # HASH_THRESHOLD: "12"
+      # INCLUDE_VIDEOS: "true"
+      # DRY_RUN: "true"
+      # UNSTACK_ALL: "false"
+    volumes:
+      - ./immich-smart-stacker-data:/data
+```
+
+Notes:
+- `IMMICH_API_URL` uses the Immich server container name on the same Compose network (`immich-server` is the default service name in many Immich setups).
+- Put `IMMICH_API_KEY` in your `.env` file next to `docker-compose.yml`.
+- Create a key in Immich with `asset:view`, `asset:read`, and `stack:*` permissions.
+
+Start or update the service:
+
+```bash
+docker compose up -d immich-smart-stacker
+```
+
+See the [Docker](#docker) section for image links and pull details.
+
+## Development (Local)
+
+Use local Python only for development, debugging, and tests. Regular usage should use Docker or docker-compose.
+
+### Python venv setup
+
+```bash
+# From the smart-stacker directory
+python3 -m venv .venv
+source .venv/bin/activate
+
+# Install dependencies inside the venv for local development
+pip install -r requirements.txt
+
+python immich-smart-stacker.py --help
+```
+
+Deactivate when done:
+
+```bash
+deactivate
+```
+
+## Docker
+
+Docker Hub: [dockerhub/myrveln/immich-smart-stacker](https://hub.docker.com/r/myrveln/immich-smart-stacker)
+
+Pull latest image:
+
+```bash
+docker pull docker.io/myrveln/immich-smart-stacker:latest
 ```
 
 ## Configuration
@@ -142,11 +183,12 @@ iPhones capture burst sequences with:
 
 ```bash
 # Get user ID from Immich (Settings > Profile or API response)
-python immich-smart-stacker.py \
-  --api-url http://127.0.0.1:2283 \
-  --api-key YOUR_KEY \
-  --user-filter 12345-abcde-67890-fghij \
-  --dry-run  # First run with dry-run to preview
+docker run --rm \
+  -e IMMICH_API_URL=http://127.0.0.1:2283/api \
+  -e IMMICH_API_KEY=YOUR_KEY \
+  -e IMMICH_USER_FILTER=12345-abcde-67890-fghij \
+  -e DRY_RUN=true \
+  docker.io/myrveln/immich-smart-stacker:latest
 ```
 
 ## Troubleshooting
@@ -183,20 +225,22 @@ python immich-smart-stacker.py \
 
 ### Unstack everything
 ```bash
-python immich-smart-stacker.py \
-  --api-url http://127.0.0.1:2283 \
-  --api-key YOUR_KEY \
-  --unstack-all
+docker run --rm \
+  -e IMMICH_API_URL=http://127.0.0.1:2283/api \
+  -e IMMICH_API_KEY=YOUR_KEY \
+  -e UNSTACK_ALL=true \
+  docker.io/myrveln/immich-smart-stacker:latest
 ```
 
 For one user only:
 
 ```bash
-python immich-smart-stacker.py \
-  --api-url http://127.0.0.1:2283 \
-  --api-key YOUR_KEY \
-  --unstack-all \
-  --user-filter 12345-abcde-67890-fghij
+docker run --rm \
+  -e IMMICH_API_URL=http://127.0.0.1:2283/api \
+  -e IMMICH_API_KEY=YOUR_KEY \
+  -e UNSTACK_ALL=true \
+  -e IMMICH_USER_FILTER=12345-abcde-67890-fghij \
+  docker.io/myrveln/immich-smart-stacker:latest
 ```
 
 ### Repeated "401/403 thumbnail" messages
