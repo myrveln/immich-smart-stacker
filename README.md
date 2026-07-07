@@ -4,6 +4,8 @@
 
 Smart visual similarity grouping for Immich photos, designed for iPhone burst detection and similar photo sequences.
 
+Repository: [myrveln/immich-smart-stacker](https://github.com/myrveln/immich-smart-stacker)
+
 ## Features
 
 - **Temporal Clustering**: Groups photos taken within configurable time window (default: 2 seconds)
