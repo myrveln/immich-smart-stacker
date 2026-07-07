@@ -51,6 +51,7 @@ class FakeClient:
         self.api_url = "http://x/api"
         self._stacks = {"s-empty": [], "s1": ["a", "b"]}
         self.created = []
+        self.last_thumbnail_status = 404
 
     def get_existing_stacks(self):
         return dict(self._stacks)

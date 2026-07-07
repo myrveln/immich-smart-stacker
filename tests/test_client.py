@@ -5,6 +5,7 @@ from io import BytesIO
 import pytest
 from PIL import Image
 
+import tests._module as mm
 from tests._module import Asset, ImmichClient
 
 
@@ -139,6 +140,77 @@ def test_request_retries_retryable_status(monkeypatch):
     resp = c._search_metadata({"page": 1, "size": 1})
     assert resp.status_code == 200
     assert len(s.post_calls) == 2
+
+
+def test_request_retry_after_header(monkeypatch):
+    c = ImmichClient("http://x", "k", max_retries=1, retry_backoff=0.1)
+    s = DummySession()
+    s.post_responses = [
+        DummyResp(status_code=429, headers={"Retry-After": "2"}),
+        DummyResp(status_code=200, payload={"ok": True}),
+    ]
+    c.session = s
+
+    sleeps = []
+    monkeypatch.setattr("tests._module.module.time.sleep", lambda delay: sleeps.append(delay))
+    resp = c._search_metadata({"page": 1, "size": 1})
+    assert resp.status_code == 200
+    assert sleeps == [2.0]
+
+
+def test_request_exception_retries_then_succeeds(monkeypatch):
+    c = ImmichClient("http://x", "k", max_retries=1, retry_backoff=0.25)
+
+    class RaisingSession:
+        def __init__(self):
+            self.headers = {}
+            self.calls = 0
+
+        def request(self, method, url, timeout=None, **kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                raise mm.module.requests.RequestException("temporary")
+            return DummyResp(status_code=200, payload={"ok": True})
+
+    s = RaisingSession()
+    c.session = s
+
+    sleeps = []
+    monkeypatch.setattr("tests._module.module.time.sleep", lambda delay: sleeps.append(delay))
+    resp = c._request("GET", "http://x/api/ping")
+    assert resp.status_code == 200
+    assert sleeps == [0.25]
+
+
+def test_request_exception_raises_on_last_attempt():
+    c = ImmichClient("http://x", "k", max_retries=0, retry_backoff=0)
+
+    class AlwaysFailSession:
+        def __init__(self):
+            self.headers = {}
+
+        def request(self, method, url, timeout=None, **kwargs):
+            raise mm.module.requests.RequestException("fatal")
+
+    c.session = AlwaysFailSession()
+    with pytest.raises(mm.module.requests.RequestException):
+        c._request("GET", "http://x/api/ping")
+
+
+def test_request_unreachable_guard_path():
+    c = ImmichClient("http://x", "k")
+    c.max_retries = -1  # force attempts=0 to exercise the guard
+
+    class NoopSession:
+        def __init__(self):
+            self.headers = {}
+
+        def request(self, method, url, timeout=None, **kwargs):
+            return DummyResp(status_code=200)
+
+    c.session = NoopSession()
+    with pytest.raises(RuntimeError):
+        c._request("GET", "http://x/api/ping")
 
 
 def test_search_metadata_400_error_logging_json_parse_failure():
