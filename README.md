@@ -10,6 +10,12 @@ Smart visual similarity grouping for Immich photos, designed for iPhone burst de
 - **Visual Similarity**: Uses perceptual hashing to group visually similar photos
 - **Burst Detection**: Ideal for iPhone burst sequences
 - **Improved Video Handling**: Optional ffmpeg frame fallback and clearer video diagnostics when `--include-videos` is enabled
+- **Scheduled Mode**: Optional loop mode with configurable run interval and max-runs
+- **Incremental Processing**: Time-window filtering with `since`/`until` and rolling `last-n-days`
+- **Watermark State**: Resume recurring runs from last successful high-water timestamp
+- **Machine-Readable Output**: Optional JSON run summary for automation/monitoring
+- **Automatic User Scoping**: Defaults to current authenticated user unless `--all-users` is set
+- **Idempotent Merge Behavior**: Expands/intersects existing stacks instead of creating duplicates
 - **Dry Run Mode**: Preview changes before applying
 - **Multi-User Support**: Can be run per-user
 - **Resilient API Calls**: Built-in timeout and retry/backoff for transient API failures
@@ -27,10 +33,6 @@ Run the published image with environment variables:
 docker run --rm \
   -e IMMICH_API_URL=http://127.0.0.1:2283/api \
   -e IMMICH_API_KEY=YOUR_API_KEY \
-  -e IMMICH_USER_FILTER=12345-abcde-67890-fghij \
-  -e TEMPORAL_WINDOW=30.0 \
-  -e HASH_THRESHOLD=12 \
-  -e INCLUDE_VIDEOS=true \
   docker.io/myrveln/immich-smart-stacker:latest
 ```
 
@@ -43,6 +45,8 @@ docker run --rm \
   -e IMMICH_API_KEY=YOUR_API_KEY \
   docker.io/myrveln/immich-smart-stacker:latest
 ```
+
+For all optional runtime environment variables, see [Environment Variables](#environment-variables).
 
 For repeated scheduled runs, keep `/data` mounted so the local idempotency cache is preserved between container executions.
 
@@ -58,13 +62,6 @@ If you already run Immich with Docker Compose, add this service to your existing
     environment:
       IMMICH_API_URL: http://immich-server:2283/api
       IMMICH_API_KEY: ${IMMICH_API_KEY}
-      # Optional tuning
-      # IMMICH_USER_FILTER: "12345-abcde-67890-fghij"
-      # TEMPORAL_WINDOW: "30.0"
-      # HASH_THRESHOLD: "12"
-      # INCLUDE_VIDEOS: "true"
-      # DRY_RUN: "true"
-      # UNSTACK_ALL: "false"
     volumes:
       - ./immich-smart-stacker-data:/data
 ```
@@ -73,6 +70,7 @@ Notes:
 - `IMMICH_API_URL` uses the Immich server container name on the same Compose network (`immich-server` is the default service name in many Immich setups).
 - Put `IMMICH_API_KEY` in your `.env` file next to `docker-compose.yml`.
 - Create a key in Immich with `asset:view`, `asset:read`, and `stack:*` permissions.
+- For all optional runtime environment variables, see [Environment Variables](#environment-variables).
 - Keep the `/data` volume in place for repeated scheduled runs so idempotency state persists.
 
 Start or update the service:
@@ -298,7 +296,6 @@ The Docker image reads these variables:
 - `UNSTACK_ALL`: Set to `true` to delete all matching stacks
 - `INTERVAL_SECONDS`: Set to `>0` to enable scheduled loop mode
 - `MAX_RUNS`: Optional limit on loop iterations when scheduled mode is enabled
-- `SMART_STACKER_STATE_FILE`: Optional path for the local idempotency cache
 - `OUTPUT_JSON`: Set to `true` to emit machine-readable run summary JSON
 - `SMART_STACKER_STATE_FILE`: Optional path for local idempotency cache and incremental watermark storage
 

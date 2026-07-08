@@ -40,6 +40,7 @@ RUN apk add --no-cache \
 
 COPY --from=builder /wheels /wheels
 COPY requirements.txt immich-smart-stacker.py ./
+COPY immich_smart_stacker ./immich_smart_stacker
 
 RUN pip install --no-cache-dir --no-index --find-links=/wheels -r requirements.txt \
     && rm -rf /wheels
@@ -48,4 +49,4 @@ VOLUME ["/data"]
 
 USER app
 
-ENTRYPOINT ["python", "/app/immich-smart-stacker.py"]
+ENTRYPOINT ["python", "-m", "immich_smart_stacker"]
