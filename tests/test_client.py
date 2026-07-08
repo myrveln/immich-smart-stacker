@@ -239,12 +239,17 @@ def test_extract_to_int_to_asset_helpers():
             "createdAt": "2024-01-01T00:00:00Z",
             "ownerId": "u",
             "assetType": "IMAGE",
+            "isFavorite": True,
+            "exifInfo": {"exifImageWidth": 4032, "exifImageHeight": 3024},
             "stack": {"id": "s1"},
         }
     )
     assert a is not None
     assert a.stackId == "s1"
     assert a.type == "image"
+    assert a.isFavorite is True
+    assert a.width == 4032
+    assert a.height == 3024
 
 
 def test_get_all_assets_pagination_and_filtering(monkeypatch):

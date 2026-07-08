@@ -49,6 +49,9 @@ class Asset:
     updatedAt: str
     type: str  # image or video
     stackId: Optional[str] = None
+    width: Optional[int] = None
+    height: Optional[int] = None
+    isFavorite: bool = False
 
     @property
     def created_dt(self):
@@ -221,6 +224,30 @@ class ImmichClient:
         updated_at = item.get('updatedAt') or file_created_at
         owner_id = item.get('ownerId') or item.get('userId')
         asset_type = item.get('type') or item.get('assetType') or 'IMAGE'
+        width = ImmichClient._to_int(
+            item.get('exifInfo', {}).get('exifImageWidth')
+            if isinstance(item.get('exifInfo'), dict)
+            else None,
+            default=0,
+        )
+        if width <= 0:
+            width = ImmichClient._to_int(item.get('exifImageWidth'), default=0)
+        if width <= 0:
+            width = ImmichClient._to_int(item.get('width'), default=0)
+
+        height = ImmichClient._to_int(
+            item.get('exifInfo', {}).get('exifImageHeight')
+            if isinstance(item.get('exifInfo'), dict)
+            else None,
+            default=0,
+        )
+        if height <= 0:
+            height = ImmichClient._to_int(item.get('exifImageHeight'), default=0)
+        if height <= 0:
+            height = ImmichClient._to_int(item.get('height'), default=0)
+
+        is_favorite_raw = item.get('isFavorite')
+        is_favorite = bool(is_favorite_raw) if is_favorite_raw is not None else False
         stack_id = item.get('stackId')
         if stack_id is None and isinstance(item.get('stack'), dict):
             stack_id = item['stack'].get('id')
@@ -236,6 +263,9 @@ class ImmichClient:
             updatedAt=updated_at,
             type=str(asset_type).lower(),
             stackId=stack_id,
+            width=width or None,
+            height=height or None,
+            isFavorite=is_favorite,
         )
 
     def get_all_assets(self, user_id: str = None) -> List[Asset]:
@@ -651,6 +681,29 @@ class SmartStacker:
             logger.warning(f"Failed to hash {asset.fileName}: {e}")
             return None
 
+    @staticmethod
+    def _resolution_score(asset: Asset) -> int:
+        """Return a best-effort resolution score for primary selection."""
+        width = asset.width or 0
+        height = asset.height or 0
+        return width * height
+
+    @classmethod
+    def select_primary_asset(cls, assets: List[Asset]) -> Asset:
+        """Pick stack primary by favorite > resolution > earliest timestamp."""
+        if not assets:
+            raise ValueError("Cannot select a primary asset from an empty list")
+
+        return sorted(
+            assets,
+            key=lambda asset: (
+                not bool(asset.isFavorite),
+                -cls._resolution_score(asset),
+                asset.created_dt,
+                asset.id,
+            ),
+        )[0]
+
     def hamming_distance(self, hash1: str, hash2: str) -> int:
         """Compute hamming distance between two hashes."""
         if hash1 is None or hash2 is None:
@@ -876,10 +929,10 @@ class SmartStacker:
                 logger.debug("Skipping previously processed stack signature")
                 continue
 
-            # Sort by timestamp, first one is primary.
-            expanded_assets.sort(key=lambda a: a.created_dt)
-            primary = expanded_assets[0]
-            children = [a.id for a in expanded_assets[1:]]
+            # Keep deterministic child order while selecting primary by heuristic.
+            expanded_assets.sort(key=lambda a: (a.created_dt, a.id))
+            primary = self.select_primary_asset(expanded_assets)
+            children = [a.id for a in expanded_assets if a.id != primary.id]
 
             logger.info(
                 f"Merging/stacking: {primary.fileName} + {len(children)} similar photos "

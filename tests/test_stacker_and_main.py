@@ -222,6 +222,45 @@ def test_filter_similarity_graph_requires_two_hashable_assets(monkeypatch):
     assert groups == []
 
 
+def test_select_primary_asset_heuristics():
+    c = FakeClient()
+    s = SmartStacker(c)
+
+    assets = [
+        Asset("a", "u", "a", "2024-01-01T00:00:00Z", "2024-01-01T00:00:00Z", "image", width=3000, height=2000),
+        Asset("b", "u", "b", "2024-01-01T00:00:01Z", "2024-01-01T00:00:01Z", "image", width=1000, height=800, isFavorite=True),
+        Asset("c", "u", "c", "2024-01-01T00:00:02Z", "2024-01-01T00:00:02Z", "image", width=5000, height=3000),
+    ]
+
+    primary = s.select_primary_asset(assets)
+    assert primary.id == "b"
+
+
+def test_select_primary_asset_empty_raises():
+    c = FakeClient()
+    s = SmartStacker(c)
+    with pytest.raises(ValueError):
+        s.select_primary_asset([])
+
+
+def test_run_uses_primary_heuristics(monkeypatch, tmp_path):
+    c = FakeClient()
+    s = SmartStacker(c, dry_run=False, state_file=tmp_path / "state.json")
+
+    assets = [
+        Asset("a", "u1", "a.jpg", "2024-01-01T00:00:00Z", "2024-01-01T00:00:00Z", "image", width=5000, height=3000),
+        Asset("b", "u1", "b.jpg", "2024-01-01T00:00:01Z", "2024-01-01T00:00:01Z", "image", width=1000, height=800, isFavorite=True),
+    ]
+
+    monkeypatch.setattr(s, "cluster_by_temporal_proximity", lambda _assets: [assets])
+    monkeypatch.setattr(s, "filter_by_visual_similarity", lambda _cluster: [assets])
+    monkeypatch.setattr(s, "expand_with_existing_stacks", lambda ids: ids)
+
+    created = s.run(assets)
+    assert created == 1
+    assert c.created[0][0] == "b"
+
+
 def test_merge_replace_and_run_paths(monkeypatch, sample_assets, tmp_path):
     c = FakeClient()
     s = SmartStacker(c, dry_run=True, state_file=tmp_path / "state.json")
