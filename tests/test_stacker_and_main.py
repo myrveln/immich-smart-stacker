@@ -138,6 +138,41 @@ def test_hamming_cluster_and_similarity(sample_assets, monkeypatch):
     assert [a.id for a in groups[0]] == ["a", "b"]
 
 
+def test_filter_similarity_graph_transitive_connectivity(monkeypatch):
+    c = FakeClient()
+    s = SmartStacker(c)
+
+    cluster = [
+        Asset("a", "u", "a", "2024-01-01T00:00:00Z", "2024-01-01T00:00:00Z", "image"),
+        Asset("b", "u", "b", "2024-01-01T00:00:01Z", "2024-01-01T00:00:01Z", "image"),
+        Asset("c", "u", "c", "2024-01-01T00:00:02Z", "2024-01-01T00:00:02Z", "image"),
+    ]
+
+    # a~b and b~c are within threshold=1; a~c is not. Graph components should still return [a,b,c].
+    hashes = {"a": "0", "b": "1", "c": "3"}
+    monkeypatch.setattr(s, "compute_hash", lambda asset: hashes[asset.id])
+
+    groups = s.filter_by_visual_similarity(cluster, threshold=1)
+    assert len(groups) == 1
+    assert [asset.id for asset in groups[0]] == ["a", "b", "c"]
+
+
+def test_filter_similarity_graph_requires_two_hashable_assets(monkeypatch):
+    c = FakeClient()
+    s = SmartStacker(c)
+
+    cluster = [
+        Asset("a", "u", "a", "2024-01-01T00:00:00Z", "2024-01-01T00:00:00Z", "image"),
+        Asset("b", "u", "b", "2024-01-01T00:00:01Z", "2024-01-01T00:00:01Z", "image"),
+    ]
+
+    hashes = {"a": "0", "b": None}
+    monkeypatch.setattr(s, "compute_hash", lambda asset: hashes[asset.id])
+
+    groups = s.filter_by_visual_similarity(cluster, threshold=1)
+    assert groups == []
+
+
 def test_merge_replace_and_run_paths(monkeypatch, sample_assets, tmp_path):
     c = FakeClient()
     s = SmartStacker(c, dry_run=True, state_file=tmp_path / "state.json")
