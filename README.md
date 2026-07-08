@@ -97,6 +97,10 @@ source .venv/bin/activate
 # Install dependencies inside the venv for local development
 pip install -r requirements.txt
 
+# Module entrypoint (new package layout)
+python -m immich_smart_stacker --help
+
+# Backward-compatible script entrypoint
 python immich-smart-stacker.py --help
 ```
 
@@ -137,12 +141,16 @@ docker pull docker.io/myrveln/immich-smart-stacker:latest
 - `--video-frame-fallback`: For videos, attempt ffmpeg frame extraction if thumbnail hashing fails (off by default)
 - `--video-skip-preview` / `--no-video-skip-preview`: Control whether video preview `404` skips thumbnail fallback request (default: skip)
 - `--video-frame-fallback-timeout` (default: 10.0): Timeout in seconds for ffmpeg frame extraction fallback
+- `--interval-seconds` (default: 0): Enable scheduled mode and sleep this many seconds between runs
+- `--max-runs` (optional): Stop scheduled mode after N iterations (useful for testing or bounded jobs)
 - `--verbose`: Enable debug logging
 
 Notes:
 - `--verbose` now focuses on script internals and avoids noisy low-level HTTP connection spam.
 - If your key can list metadata beyond assets it can read thumbnails for, default auto-filtering helps avoid repeated `403` thumbnail warnings.
 - Videos are skipped by default to avoid noisy `404` thumbnail misses on some media; use `--include-videos` to opt in.
+- Set `--interval-seconds > 0` for daemon/scheduled mode in a single container.
+- Use `--max-runs` to bound scheduled mode in CI/tests or one-shot batch jobs.
 - Existing stacks are not treated as immutable: if a new run finds a larger matching group that intersects an existing stack, the script will merge/extend the stack.
 - In `--unstack-all` mode: with `--user-filter <userId>`, only that user's stacks are deleted; without `--user-filter`, stacks for all users are deleted.
 
@@ -272,6 +280,8 @@ The Docker image reads these variables:
 - `VIDEO_FRAME_FALLBACK_TIMEOUT`: Timeout in seconds for ffmpeg fallback frame extraction
 - `DRY_RUN`: Set to `true` to preview only
 - `UNSTACK_ALL`: Set to `true` to delete all matching stacks
+- `INTERVAL_SECONDS`: Set to `>0` to enable scheduled loop mode
+- `MAX_RUNS`: Optional limit on loop iterations when scheduled mode is enabled
 - `SMART_STACKER_STATE_FILE`: Optional path for the local idempotency cache
 
 ## Testing and Coverage

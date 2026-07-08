@@ -403,3 +403,91 @@ def test_main_unstack_mode(monkeypatch):
     monkeypatch.setattr(mm.module, "unstack_all", lambda client, dry_run, user_filter: 3)
     monkeypatch.setattr(mm.module.sys, "argv", ["prog", "--api-url", "http://x", "--api-key", "k", "--unstack-all"])  # nosec B106
     assert main() == 0
+
+
+def test_main_scheduled_mode_success(monkeypatch):
+    run_calls = {"count": 0}
+    sleeps = []
+
+    class MainClient(FakeClient):
+        def __init__(self, api_url, api_key):
+            super().__init__()
+
+        def get_current_user_id(self):
+            return "u1"
+
+        def get_all_assets(self):
+            return [
+                Asset("a", "u1", "a", "2024-01-01T00:00:00Z", "2024-01-01T00:00:00Z", "image"),
+                Asset("b", "u1", "b", "2024-01-01T00:00:01Z", "2024-01-01T00:00:01Z", "image"),
+            ]
+
+    class MainStacker:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def run(self, assets, user_filter=None):
+            run_calls["count"] += 1
+            return 0
+
+    monkeypatch.setattr(mm.module, "ImmichClient", MainClient)
+    monkeypatch.setattr(mm.module, "SmartStacker", MainStacker)
+    monkeypatch.setattr(mm.module.time, "sleep", lambda seconds: sleeps.append(seconds))
+    monkeypatch.setattr(
+        mm.module.sys,
+        "argv",
+        [
+            "prog",
+            "--api-url",
+            "http://x",
+            "--api-key",
+            "k",
+            "--interval-seconds",
+            "0.01",
+            "--max-runs",
+            "2",
+        ],
+    )
+    assert main() == 0
+    assert run_calls["count"] == 2
+    assert sleeps == [0.01]
+
+
+def test_main_scheduled_mode_failure(monkeypatch):
+    sleeps = []
+
+    class FailClient(FakeClient):
+        def __init__(self, api_url, api_key):
+            raise RuntimeError("boom")
+
+    monkeypatch.setattr(mm.module, "ImmichClient", FailClient)
+    monkeypatch.setattr(mm.module.time, "sleep", lambda seconds: sleeps.append(seconds))
+    monkeypatch.setattr(
+        mm.module.sys,
+        "argv",
+        [
+            "prog",
+            "--api-url",
+            "http://x",
+            "--api-key",
+            "k",
+            "--interval-seconds",
+            "0.01",
+            "--max-runs",
+            "2",
+        ],
+    )
+    assert main() == 1
+    assert sleeps == [0.01]
+
+
+def test_main_scheduled_mode_invalid_args(monkeypatch):
+    monkeypatch.setattr(mm.module.sys, "argv", ["prog", "--api-url", "http://x", "--api-key", "k", "--interval-seconds", "-1"])
+    assert main() == 1
+
+    monkeypatch.setattr(
+        mm.module.sys,
+        "argv",
+        ["prog", "--api-url", "http://x", "--api-key", "k", "--interval-seconds", "1", "--max-runs", "0"],
+    )
+    assert main() == 1
