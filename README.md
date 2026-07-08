@@ -44,6 +44,8 @@ docker run --rm \
   docker.io/myrveln/immich-smart-stacker:latest
 ```
 
+For repeated scheduled runs, keep `/data` mounted so the local idempotency cache is preserved between container executions.
+
 ### Run with docker-compose
 
 If you already run Immich with Docker Compose, add this service to your existing `docker-compose.yml` under `services:`:
@@ -71,6 +73,7 @@ Notes:
 - `IMMICH_API_URL` uses the Immich server container name on the same Compose network (`immich-server` is the default service name in many Immich setups).
 - Put `IMMICH_API_KEY` in your `.env` file next to `docker-compose.yml`.
 - Create a key in Immich with `asset:view`, `asset:read`, and `stack:*` permissions.
+- Keep the `/data` volume in place for repeated scheduled runs so idempotency state persists.
 
 Start or update the service:
 

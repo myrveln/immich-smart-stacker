@@ -478,6 +478,12 @@ class ImmichClient:
         """Best-effort owner id extraction from stack response payload."""
         assets = stack_payload.get('assets', []) or []
         primary_id = stack_payload.get('primaryAssetId')
+        primary_asset = stack_payload.get('primaryAsset') if isinstance(stack_payload.get('primaryAsset'), dict) else None
+
+        if primary_asset:
+            owner_id = primary_asset.get('ownerId') or primary_asset.get('userId')
+            if owner_id:
+                return owner_id
 
         for asset in assets:
             if asset.get('id') == primary_id:
@@ -488,6 +494,32 @@ class ImmichClient:
 
         return None
 
+    @staticmethod
+    def _stack_asset_ids(stack_payload: Dict[str, Any]) -> List[str]:
+        """Best-effort asset id extraction from varying Immich stack response shapes."""
+        asset_ids: List[str] = []
+
+        assets = stack_payload.get('assets', []) or []
+        asset_ids.extend(asset.get('id') for asset in assets if isinstance(asset, dict) and asset.get('id'))
+
+        primary_id = stack_payload.get('primaryAssetId')
+        if primary_id:
+            asset_ids.append(primary_id)
+
+        primary_asset = stack_payload.get('primaryAsset')
+        if isinstance(primary_asset, dict) and primary_asset.get('id'):
+            asset_ids.append(primary_asset.get('id'))
+
+        direct_asset_ids = stack_payload.get('assetIds')
+        if isinstance(direct_asset_ids, list):
+            asset_ids.extend(asset_id for asset_id in direct_asset_ids if asset_id)
+
+        secondary_asset_ids = stack_payload.get('secondaryAssetIds')
+        if isinstance(secondary_asset_ids, list):
+            asset_ids.extend(asset_id for asset_id in secondary_asset_ids if asset_id)
+
+        return list(dict.fromkeys(asset_ids))
+
     def get_stacks(self) -> List[Dict[str, Any]]:
         """Get detailed stack list with ids, asset ids, primary id and owner id."""
         resp = self._request('GET', f"{self.api_url}/stacks")
@@ -495,11 +527,10 @@ class ImmichClient:
 
         stacks: List[Dict[str, Any]] = []
         for stack in resp.json():
-            assets = stack.get('assets', []) or []
-            asset_ids = [asset.get('id') for asset in assets if asset.get('id')]
+            asset_ids = self._stack_asset_ids(stack)
             primary_id = stack.get('primaryAssetId')
-            if primary_id and primary_id not in asset_ids:
-                asset_ids.append(primary_id)
+            if primary_id is None and isinstance(stack.get('primaryAsset'), dict):
+                primary_id = stack['primaryAsset'].get('id')
             stacks.append({
                 'id': stack.get('id'),
                 'primaryAssetId': primary_id,
@@ -629,6 +660,18 @@ class SmartStacker:
                     changed = True
 
         return list(expanded)
+
+    def _augment_existing_stacks_from_assets(self, assets: List[Asset]) -> None:
+        """Supplement stack membership from asset metadata when available."""
+        grouped: Dict[str, List[str]] = {}
+        for asset in assets:
+            if asset.stackId:
+                grouped.setdefault(asset.stackId, []).append(asset.id)
+
+        for stack_id, asset_ids in grouped.items():
+            unique_ids = list(dict.fromkeys(asset_ids))
+            if len(unique_ids) >= 2:
+                self.existing_stacks.setdefault(stack_id, unique_ids)
 
     def compute_hash(self, asset: Asset) -> str:
         """Compute perceptual hash for an asset."""
@@ -863,6 +906,7 @@ class SmartStacker:
             logger.info("No assets to process")
             return 0
 
+        self._augment_existing_stacks_from_assets(assets)
         assets_by_id = {a.id: a for a in assets}
 
         # Cluster by temporal proximity
@@ -958,10 +1002,10 @@ class SmartStacker:
             top_users_text = ', '.join([f"{uid}:{count}" for uid, count in top_users])
             top_statuses = sorted(self.inaccessible_by_status.items(), key=lambda kv: kv[1], reverse=True)
             top_statuses_text = ', '.join([f"{code}:{count}" for code, count in top_statuses])
-            logger.warning(
-                "Inaccessible asset owner distribution (top 5): "
-                f"{top_users_text}. Consider --user-filter <ownerId> to scope processing."
-            )
+            owner_warning = f"Inaccessible asset owner distribution (top 5): {top_users_text}."
+            if not user_filter:
+                owner_warning += " Consider --user-filter <ownerId> to scope processing."
+            logger.warning(owner_warning)
             logger.warning(f"Unhashable thumbnail status distribution: {top_statuses_text}")
             if self.video_events:
                 video_events_text = ', '.join(

@@ -98,6 +98,9 @@ def test_expand_and_set_helpers(sample_assets):
     ]
     assert SmartStacker._all_in_same_stack(same_stack_assets) is True
 
+    s._augment_existing_stacks_from_assets(same_stack_assets)
+    assert s.existing_stacks["s"] == ["a", "b"]
+
 
 def test_compute_hash_paths(monkeypatch, sample_assets):
     c = FakeClient()
@@ -316,6 +319,20 @@ def test_run_with_inaccessible_warning_path(monkeypatch, sample_assets, tmp_path
 
     monkeypatch.setattr(s, "cluster_by_temporal_proximity", lambda _assets: [])
     assert s.run(sample_assets) == 0
+
+
+def test_run_with_inaccessible_warning_path_user_filtered(monkeypatch, sample_assets, tmp_path, caplog):
+    c = FakeClient()
+    s = SmartStacker(c, state_file=tmp_path / "s3.json")
+    s.inaccessible_assets_count = 1
+    s.inaccessible_by_user = {"u1": 1}
+    s.inaccessible_by_status = {"404": 1}
+
+    monkeypatch.setattr(s, "cluster_by_temporal_proximity", lambda _assets: [])
+    with caplog.at_level(mm.module.logging.WARNING):
+        assert s.run(sample_assets, user_filter="u1") == 0
+
+    assert "Consider --user-filter <ownerId>" not in caplog.text
 
 
 def test_unstack_all_paths():
