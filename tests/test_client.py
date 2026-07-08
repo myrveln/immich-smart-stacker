@@ -468,3 +468,37 @@ def test_stack_owner_fallback():
     payload = {"primaryAssetId": "x", "assets": [{"id": "y", "userId": "u9"}]}
     assert ImmichClient._stack_owner_id(payload) == "u9"
     assert ImmichClient._stack_owner_id({"assets": []}) is None
+
+
+def test_stack_helpers_support_alternate_shapes():
+    payload = {
+        "id": "st1",
+        "primaryAsset": {"id": "p1", "ownerId": "u1"},
+        "assetIds": ["p1", "c1"],
+        "secondaryAssetIds": ["c2"],
+    }
+
+    assert ImmichClient._stack_owner_id(payload) == "u1"
+    assert ImmichClient._stack_asset_ids(payload) == ["p1", "c1", "c2"]
+
+
+def test_get_stacks_primary_asset_object_shape():
+    c = ImmichClient("http://x", "k")
+    s = DummySession()
+    s.get_responses = [
+        DummyResp(
+            status_code=200,
+            payload=[
+                {
+                    "id": "st1",
+                    "primaryAsset": {"id": "p1", "ownerId": "u1"},
+                    "assetIds": ["p1", "c1"],
+                }
+            ],
+        )
+    ]
+    c.session = s
+
+    stacks = c.get_stacks()
+    assert stacks[0]["primaryAssetId"] == "p1"
+    assert stacks[0]["assetIds"] == ["p1", "c1"]
