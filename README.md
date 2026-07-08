@@ -97,6 +97,10 @@ source .venv/bin/activate
 # Install dependencies inside the venv for local development
 pip install -r requirements.txt
 
+# Module entrypoint (new package layout)
+python -m immich_smart_stacker --help
+
+# Backward-compatible script entrypoint
 python immich-smart-stacker.py --help
 ```
 
@@ -127,6 +131,10 @@ docker pull docker.io/myrveln/immich-smart-stacker:latest
 - `--temporal-window` (default: 2.0): Burst detection window in seconds
   - iPhone bursts: ~0-10ms between frames; 2 seconds captures most bursts
   - Adjust up if you want more lenient grouping
+- `--since`: Only process assets created at/after this ISO-8601 timestamp
+- `--until`: Only process assets created at/before this ISO-8601 timestamp
+- `--last-n-days`: Only process assets from the last N days (overrides `--since`)
+- `--use-watermark`: Reuse and persist a last-successful timestamp in the state file for incremental recurring runs
 - `--hash-threshold` (default: 8): Hamming distance threshold for visual similarity
   - Lower = stricter matching (fewer false positives)
   - 5-8 = good for burst detection (same motive, rapid succession)
@@ -137,12 +145,19 @@ docker pull docker.io/myrveln/immich-smart-stacker:latest
 - `--video-frame-fallback`: For videos, attempt ffmpeg frame extraction if thumbnail hashing fails (off by default)
 - `--video-skip-preview` / `--no-video-skip-preview`: Control whether video preview `404` skips thumbnail fallback request (default: skip)
 - `--video-frame-fallback-timeout` (default: 10.0): Timeout in seconds for ffmpeg frame extraction fallback
+- `--interval-seconds` (default: 0): Enable scheduled mode and sleep this many seconds between runs
+- `--max-runs` (optional): Stop scheduled mode after N iterations (useful for testing or bounded jobs)
+- `--output-json`: Emit machine-readable JSON summary to stdout
 - `--verbose`: Enable debug logging
 
 Notes:
 - `--verbose` now focuses on script internals and avoids noisy low-level HTTP connection spam.
 - If your key can list metadata beyond assets it can read thumbnails for, default auto-filtering helps avoid repeated `403` thumbnail warnings.
 - Videos are skipped by default to avoid noisy `404` thumbnail misses on some media; use `--include-videos` to opt in.
+- Set `--interval-seconds > 0` for daemon/scheduled mode in a single container.
+- Use `--max-runs` to bound scheduled mode in CI/tests or one-shot batch jobs.
+- `--last-n-days` takes precedence over `--since`.
+- `--use-watermark` only loads a watermark automatically when `--since` and `--last-n-days` are not set.
 - Existing stacks are not treated as immutable: if a new run finds a larger matching group that intersects an existing stack, the script will merge/extend the stack.
 - In `--unstack-all` mode: with `--user-filter <userId>`, only that user's stacks are deleted; without `--user-filter`, stacks for all users are deleted.
 
@@ -210,6 +225,11 @@ docker run --rm \
   - Higher (10-12) for more lenient grouping
 - Adjust `--temporal-window` (default 2.0s works for iPhones)
 
+### Incremental recurring runs
+- Use `--last-n-days` for simple rolling windows.
+- Use `--use-watermark` to persist and resume from the previous successful high-water mark.
+- Keep `SMART_STACKER_STATE_FILE` on a persistent volume (for Docker, mount `/data`) so watermark and idempotency cache survive container restarts.
+
 ### API Key Permissions Error
 - Regenerate API key with proper permissions
 - Ensure `asset:view`, `asset:read`, and `stack:*` are selected
@@ -265,6 +285,10 @@ The Docker image reads these variables:
 - `IMMICH_API_KEY`: Immich API key
 - `IMMICH_USER_FILTER`: Optional user ID filter
 - `TEMPORAL_WINDOW`: Optional temporal window in seconds
+- `SINCE`: Optional ISO-8601 lower time bound
+- `UNTIL`: Optional ISO-8601 upper time bound
+- `LAST_N_DAYS`: Optional rolling lookback window in days
+- `USE_WATERMARK`: Set to `true` to load/save incremental watermark from state file
 - `HASH_THRESHOLD`: Optional visual similarity threshold
 - `INCLUDE_VIDEOS`: Set to `true` to enable video hashing
 - `VIDEO_FRAME_FALLBACK`: Set to `true` to try ffmpeg frame extraction for videos when thumbnails fail
@@ -272,7 +296,11 @@ The Docker image reads these variables:
 - `VIDEO_FRAME_FALLBACK_TIMEOUT`: Timeout in seconds for ffmpeg fallback frame extraction
 - `DRY_RUN`: Set to `true` to preview only
 - `UNSTACK_ALL`: Set to `true` to delete all matching stacks
+- `INTERVAL_SECONDS`: Set to `>0` to enable scheduled loop mode
+- `MAX_RUNS`: Optional limit on loop iterations when scheduled mode is enabled
 - `SMART_STACKER_STATE_FILE`: Optional path for the local idempotency cache
+- `OUTPUT_JSON`: Set to `true` to emit machine-readable run summary JSON
+- `SMART_STACKER_STATE_FILE`: Optional path for local idempotency cache and incremental watermark storage
 
 ## Testing and Coverage
 

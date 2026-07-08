@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -403,3 +404,306 @@ def test_main_unstack_mode(monkeypatch):
     monkeypatch.setattr(mm.module, "unstack_all", lambda client, dry_run, user_filter: 3)
     monkeypatch.setattr(mm.module.sys, "argv", ["prog", "--api-url", "http://x", "--api-key", "k", "--unstack-all"])  # nosec B106
     assert main() == 0
+
+
+def test_main_scheduled_mode_success(monkeypatch):
+    run_calls = {"count": 0}
+    sleeps = []
+
+    class MainClient(FakeClient):
+        def __init__(self, api_url, api_key):
+            super().__init__()
+
+        def get_current_user_id(self):
+            return "u1"
+
+        def get_all_assets(self):
+            return [
+                Asset("a", "u1", "a", "2024-01-01T00:00:00Z", "2024-01-01T00:00:00Z", "image"),
+                Asset("b", "u1", "b", "2024-01-01T00:00:01Z", "2024-01-01T00:00:01Z", "image"),
+            ]
+
+    class MainStacker:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def run(self, assets, user_filter=None):
+            run_calls["count"] += 1
+            return 0
+
+    monkeypatch.setattr(mm.module, "ImmichClient", MainClient)
+    monkeypatch.setattr(mm.module, "SmartStacker", MainStacker)
+    monkeypatch.setattr(mm.module.time, "sleep", lambda seconds: sleeps.append(seconds))
+    monkeypatch.setattr(
+        mm.module.sys,
+        "argv",
+        [
+            "prog",
+            "--api-url",
+            "http://x",
+            "--api-key",
+            "k",
+            "--interval-seconds",
+            "0.01",
+            "--max-runs",
+            "2",
+        ],
+    )
+    assert main() == 0
+    assert run_calls["count"] == 2
+    assert sleeps == [0.01]
+
+
+def test_main_scheduled_mode_failure(monkeypatch):
+    sleeps = []
+
+    class FailClient(FakeClient):
+        def __init__(self, api_url, api_key):
+            raise RuntimeError("boom")
+
+    monkeypatch.setattr(mm.module, "ImmichClient", FailClient)
+    monkeypatch.setattr(mm.module.time, "sleep", lambda seconds: sleeps.append(seconds))
+    monkeypatch.setattr(
+        mm.module.sys,
+        "argv",
+        [
+            "prog",
+            "--api-url",
+            "http://x",
+            "--api-key",
+            "k",
+            "--interval-seconds",
+            "0.01",
+            "--max-runs",
+            "2",
+        ],
+    )
+    assert main() == 1
+    assert sleeps == [0.01]
+
+
+def test_main_scheduled_mode_invalid_args(monkeypatch):
+    monkeypatch.setattr(mm.module.sys, "argv", ["prog", "--api-url", "http://x", "--api-key", "k", "--interval-seconds", "-1"])
+    assert main() == 1
+
+    monkeypatch.setattr(
+        mm.module.sys,
+        "argv",
+        ["prog", "--api-url", "http://x", "--api-key", "k", "--interval-seconds", "1", "--max-runs", "0"],
+    )
+    assert main() == 1
+
+
+def test_datetime_and_state_helpers_roundtrip(tmp_path):
+    parsed = mm.module._parse_datetime_arg("2026-07-08T12:00:00Z", "--since")
+    assert parsed.tzinfo is not None
+    assert mm.module._format_datetime_utc(parsed) == "2026-07-08T12:00:00Z"
+    assert mm.module._format_datetime_utc(None) is None
+
+    naive = mm.module._parse_datetime_arg("2026-07-08T12:00:00", "--since")
+    assert naive.tzinfo is not None
+
+    with pytest.raises(ValueError):
+        mm.module._parse_datetime_arg("bad", "--since")
+
+    state_file = tmp_path / "state.json"
+    assert mm.module._load_state_json(state_file) == {}
+
+    state_file.write_text("[]")
+    assert mm.module._load_state_json(state_file) == {}
+
+    state_file.write_text("{not-json")
+    assert mm.module._load_state_json(state_file) == {}
+
+    mm.module._save_state_json(state_file, {"seen": {}})
+    assert mm.module._load_state_json(state_file) == {"seen": {}}
+
+    watermark_key = "rk"
+    dt = datetime(2026, 7, 8, 0, 0, tzinfo=timezone.utc)
+    mm.module._save_watermark(state_file, watermark_key, dt)
+    loaded = mm.module._load_watermark(state_file, watermark_key)
+    assert loaded == dt
+    assert mm.module._load_watermark(state_file, "missing") is None
+
+    data = json.loads(state_file.read_text())
+    data["watermarks"][watermark_key] = "invalid"
+    state_file.write_text(json.dumps(data))
+    assert mm.module._load_watermark(state_file, watermark_key) is None
+
+
+def test_apply_time_window_filter(sample_assets):
+    c = FakeClient()
+    since = datetime(2024, 1, 1, 0, 0, 1, tzinfo=timezone.utc)
+    until = datetime(2024, 1, 1, 0, 0, 1, tzinfo=timezone.utc)
+    s = SmartStacker(c, since_dt=since, until_dt=until)
+
+    filtered = s._apply_time_window_filter(sample_assets)
+    assert [a.id for a in filtered] == ["b"]
+
+
+def test_run_populates_summary_for_empty_after_time_filter(sample_assets):
+    c = FakeClient()
+    since = datetime(2025, 1, 1, tzinfo=timezone.utc)
+    s = SmartStacker(c, since_dt=since)
+    assert s.run(sample_assets) == 0
+    assert s.last_run_summary["assetsAfterTimeFilter"] == 0
+    assert s.last_run_summary["stacksCreated"] == 0
+
+
+def test_main_validation_errors(monkeypatch):
+    monkeypatch.setattr(mm.module.sys, "argv", ["prog", "--api-url", "http://x", "--api-key", "k", "--last-n-days", "-1"])
+    assert main() == 1
+
+    monkeypatch.setattr(mm.module.sys, "argv", ["prog", "--api-url", "http://x", "--api-key", "k", "--since", "bad"])
+    assert main() == 1
+
+    monkeypatch.setattr(
+        mm.module.sys,
+        "argv",
+        [
+            "prog",
+            "--api-url",
+            "http://x",
+            "--api-key",
+            "k",
+            "--since",
+            "2026-07-09T00:00:00Z",
+            "--until",
+            "2026-07-08T00:00:00Z",
+        ],
+    )
+    assert main() == 1
+
+
+def test_main_output_json_and_watermark(monkeypatch, tmp_path, capsys):
+    class MainClient(FakeClient):
+        def __init__(self, api_url, api_key):
+            super().__init__()
+            self.api_url = api_url
+            self.api_key = api_key
+
+        def get_current_user_id(self):
+            return "u1"
+
+        def get_all_assets(self):
+            return [
+                Asset("a", "u1", "a", "2024-01-01T00:00:00Z", "2024-01-01T00:00:00Z", "image"),
+                Asset("b", "u1", "b", "2024-01-01T00:00:01Z", "2024-01-01T00:00:01Z", "image"),
+            ]
+
+    class MainStacker:
+        def __init__(self, *args, **kwargs):
+            self.run_key = "rk"
+            self.since_dt = kwargs.get("since_dt")
+            self.until_dt = kwargs.get("until_dt")
+            self.last_run_summary = {
+                "inputAssetsTotal": 2,
+                "assetsAfterUserFilter": 2,
+                "assetsAfterTimeFilter": 2,
+                "temporalClusters": 1,
+                "candidateGroups": 1,
+                "disjointTargets": 1,
+                "stacksCreated": 1,
+                "inaccessibleAssets": 0,
+                "inaccessibleByUser": {},
+                "inaccessibleByStatus": {},
+                "videoEvents": {},
+                "durationSeconds": 0.1,
+            }
+            self.last_processed_max_created_dt = datetime(2024, 1, 1, 0, 0, 1, tzinfo=timezone.utc)
+
+        def run(self, assets, user_filter=None):
+            return 1
+
+    state_file = tmp_path / "state.json"
+    state_file.write_text(json.dumps({"watermarks": {"rk": "2024-01-01T00:00:00Z"}}))
+
+    monkeypatch.setattr(mm.module, "ImmichClient", MainClient)
+    monkeypatch.setattr(mm.module, "SmartStacker", MainStacker)
+    monkeypatch.setattr(
+        mm.module.sys,
+        "argv",
+        [
+            "prog",
+            "--api-url",
+            "http://x",
+            "--api-key",
+            "k",
+            "--state-file",
+            str(state_file),
+            "--use-watermark",
+            "--output-json",
+        ],
+    )
+    assert main() == 0
+
+    out = capsys.readouterr().out
+    payload = json.loads(out)
+    assert payload["status"] == "ok"
+    assert payload["summary"]["stacksCreated"] == 1
+    assert payload["watermark"]["loaded"] == "2024-01-01T00:00:00Z"
+    assert payload["watermark"]["saved"] == "2024-01-01T00:00:01Z"
+
+
+def test_main_output_json_error_branch(monkeypatch, capsys):
+    class FailClient(FakeClient):
+        def __init__(self, *_args, **_kwargs):
+            raise RuntimeError("boom")
+
+    monkeypatch.setattr(mm.module, "ImmichClient", FailClient)
+    monkeypatch.setattr(mm.module.sys, "argv", ["prog", "--api-url", "http://x", "--api-key", "k", "--output-json"])
+    assert main() == 1
+
+    out = capsys.readouterr().out
+    payload = json.loads(out)
+    assert payload["status"] == "error"
+
+
+def test_main_last_n_days_overrides_since(monkeypatch, tmp_path):
+    class MainClient(FakeClient):
+        def __init__(self, api_url, api_key):
+            super().__init__()
+
+        def get_current_user_id(self):
+            return "u1"
+
+        def get_all_assets(self):
+            return [Asset("a", "u1", "a", "2024-01-01T00:00:00Z", "2024-01-01T00:00:00Z", "image")]
+
+    captured = {}
+
+    class MainStacker:
+        def __init__(self, *args, **kwargs):
+            captured["since_dt"] = kwargs.get("since_dt")
+            self.run_key = "rk2"
+            self.since_dt = kwargs.get("since_dt")
+            self.until_dt = kwargs.get("until_dt")
+            self.last_processed_max_created_dt = None
+            self.last_run_summary = {}
+
+        def run(self, assets, user_filter=None):
+            return 0
+
+    monkeypatch.setattr(mm.module, "ImmichClient", MainClient)
+    monkeypatch.setattr(mm.module, "SmartStacker", MainStacker)
+    monkeypatch.setattr(
+        mm.module.sys,
+        "argv",
+        [
+            "prog",
+            "--api-url",
+            "http://x",
+            "--api-key",
+            "k",
+            "--state-file",
+            str(tmp_path / "state.json"),
+            "--since",
+            "2020-01-01T00:00:00Z",
+            "--last-n-days",
+            "1",
+        ],
+    )
+
+    assert main() == 0
+    assert captured["since_dt"] is not None
+    assert captured["since_dt"] > datetime.now(timezone.utc) - timedelta(days=2)
