@@ -1,17 +1,25 @@
 #!/usr/bin/env python3
 """Compatibility entrypoint for Immich Smart Stacker."""
 
-import sys
-import time
+import logging
 import shutil
 import subprocess
-import logging
+import sys
+import time
 
 import imagehash
 import requests
 
 from immich_smart_stacker import Asset, ImmichClient, SmartStacker, logger, unstack_all
-from immich_smart_stacker.cli import main as package_main
+from immich_smart_stacker.cli import (
+    _format_datetime_utc,
+    _load_state_json,
+    _load_watermark,
+    _parse_datetime_arg,
+    _save_state_json,
+    _save_watermark,
+    main as package_main,
+)
 
 
 def main():
@@ -24,5 +32,5 @@ def main():
     )
 
 
-if __name__ == '__main__':  # pragma: no cover
+if __name__ == '__main__':
     sys.exit(main())

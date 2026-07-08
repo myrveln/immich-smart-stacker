@@ -1,6 +1,7 @@
 import hashlib
 import json
-from datetime import timedelta
+import time
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 
@@ -18,6 +19,8 @@ class SmartStacker:
         self,
         client: ImmichClient,
         temporal_window: float = 2.0,
+        since_dt: Optional[datetime] = None,
+        until_dt: Optional[datetime] = None,
         hash_threshold: int = 8,
         dry_run: bool = False,
         include_videos: bool = False,
@@ -30,6 +33,8 @@ class SmartStacker:
     ):
         self.client = client
         self.temporal_window = timedelta(seconds=temporal_window)
+        self.since_dt = since_dt
+        self.until_dt = until_dt
         self.hash_threshold = hash_threshold
         self.dry_run = dry_run
         self.include_videos = include_videos
@@ -46,6 +51,8 @@ class SmartStacker:
         self.inaccessible_by_user: Dict[str, int] = {}
         self.inaccessible_by_status: Dict[str, int] = {}
         self.video_events: Dict[str, int] = {}
+        self.last_run_summary: Dict[str, Any] = {}
+        self.last_processed_max_created_dt: Optional[datetime] = None
         self.seen_signatures: Set[str] = self._load_seen_signatures()
         self.seen_signatures.update(
             self._signature(stack_assets)
@@ -325,13 +332,47 @@ class SmartStacker:
 
         self.existing_stacks[local_key] = list(asset_ids)
 
+    def _apply_time_window_filter(self, assets: List[Asset]) -> List[Asset]:
+        """Filter assets by optional since/until datetime bounds."""
+        filtered = assets
+
+        if self.since_dt is not None:
+            filtered = [asset for asset in filtered if asset.created_dt >= self.since_dt]
+
+        if self.until_dt is not None:
+            filtered = [asset for asset in filtered if asset.created_dt <= self.until_dt]
+
+        return filtered
+
     def run(self, assets: List[Asset], user_filter: str = None) -> int:
+        start = time.monotonic()
+        input_assets_total = len(assets)
+
         if user_filter:
             assets = [a for a in assets if a.userId == user_filter]
             logger.info(f"Filtered to user {user_filter}: {len(assets)} assets")
 
+        assets_after_user_filter = len(assets)
+        assets = self._apply_time_window_filter(assets)
+        assets_after_time_filter = len(assets)
+        self.last_processed_max_created_dt = max((asset.created_dt for asset in assets), default=None)
+
         if not assets:
             logger.info("No assets to process")
+            self.last_run_summary = {
+                'inputAssetsTotal': input_assets_total,
+                'assetsAfterUserFilter': assets_after_user_filter,
+                'assetsAfterTimeFilter': assets_after_time_filter,
+                'temporalClusters': 0,
+                'candidateGroups': 0,
+                'disjointTargets': 0,
+                'stacksCreated': 0,
+                'inaccessibleAssets': self.inaccessible_assets_count,
+                'inaccessibleByUser': dict(self.inaccessible_by_user),
+                'inaccessibleByStatus': dict(self.inaccessible_by_status),
+                'videoEvents': dict(self.video_events),
+                'durationSeconds': round(time.monotonic() - start, 3),
+            }
             return 0
 
         self._augment_existing_stacks_from_assets(assets)
@@ -442,4 +483,20 @@ class SmartStacker:
                 )
 
         logger.info(f"Stacks created: {stacks_created}")
+
+        self.last_run_summary = {
+            'inputAssetsTotal': input_assets_total,
+            'assetsAfterUserFilter': assets_after_user_filter,
+            'assetsAfterTimeFilter': assets_after_time_filter,
+            'temporalClusters': len(temporal_clusters),
+            'candidateGroups': len(candidate_groups),
+            'disjointTargets': len(merged_candidate_groups),
+            'stacksCreated': stacks_created,
+            'inaccessibleAssets': self.inaccessible_assets_count,
+            'inaccessibleByUser': dict(self.inaccessible_by_user),
+            'inaccessibleByStatus': dict(self.inaccessible_by_status),
+            'videoEvents': dict(self.video_events),
+            'durationSeconds': round(time.monotonic() - start, 3),
+        }
+
         return stacks_created
