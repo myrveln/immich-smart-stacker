@@ -585,7 +585,12 @@ class SmartStacker:
 
     def filter_by_visual_similarity(self, cluster: List[Asset],
                                     threshold: int = None) -> List[List[Asset]]:
-        """Sub-cluster by visual similarity within a temporal cluster."""
+        """Sub-cluster by visual similarity within a temporal cluster.
+
+        Uses a graph model where each hashable asset is a node and edges connect
+        assets within the hamming distance threshold. Groups are connected
+        components, which removes order-dependence from the old greedy approach.
+        """
         if threshold is None:
             threshold = self.hash_threshold
 
@@ -594,31 +599,47 @@ class SmartStacker:
             if asset.id not in self.hashes:
                 self.hashes[asset.id] = self.compute_hash(asset)
 
-        # Group by similarity
-        groups = []
-        used = set()
+        hashable_assets = [asset for asset in cluster if self.hashes.get(asset.id) is not None]
+        if len(hashable_assets) < 2:
+            return []
 
-        for i, asset1 in enumerate(cluster):
-            if asset1.id in used:
+        adjacency: Dict[str, Set[str]] = {asset.id: set() for asset in hashable_assets}
+        asset_by_id: Dict[str, Asset] = {asset.id: asset for asset in hashable_assets}
+        cluster_order: Dict[str, int] = {asset.id: index for index, asset in enumerate(cluster)}
+
+        for i, asset1 in enumerate(hashable_assets):
+            hash1 = self.hashes[asset1.id]
+            for asset2 in hashable_assets[i + 1:]:
+                hash2 = self.hashes[asset2.id]
+                if self.hamming_distance(hash1, hash2) <= threshold:
+                    adjacency[asset1.id].add(asset2.id)
+                    adjacency[asset2.id].add(asset1.id)
+
+        groups: List[List[Asset]] = []
+        visited: Set[str] = set()
+
+        for asset in hashable_assets:
+            if asset.id in visited:
                 continue
 
-            group = [asset1]
-            used.add(asset1.id)
-            hash1 = self.hashes[asset1.id]
+            stack = [asset.id]
+            component: Set[str] = set()
 
-            for asset2 in cluster[i+1:]:
-                if asset2.id in used:
+            while stack:
+                current = stack.pop()
+                if current in visited:
                     continue
+                visited.add(current)
+                component.add(current)
+                stack.extend(neighbor for neighbor in adjacency[current] if neighbor not in visited)
 
-                hash2 = self.hashes[asset2.id]
-                distance = self.hamming_distance(hash1, hash2)
-
-                if distance <= threshold:
-                    group.append(asset2)
-                    used.add(asset2.id)
-
-            if len(group) > 1:
-                groups.append(group)
+            if len(component) > 1:
+                groups.append(
+                    sorted(
+                        [asset_by_id[asset_id] for asset_id in component],
+                        key=lambda item: cluster_order[item.id],
+                    )
+                )
 
         return groups
 
