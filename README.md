@@ -4,33 +4,16 @@
 
 Smart visual similarity grouping for Immich photos, designed for iPhone burst detection and similar photo sequences.
 
-Repository: [myrveln/immich-smart-stacker](https://github.com/myrveln/immich-smart-stacker)
-
 ## Features
 
 - **Temporal Clustering**: Groups photos taken within configurable time window (default: 2 seconds)
 - **Visual Similarity**: Uses perceptual hashing to group visually similar photos
 - **Burst Detection**: Ideal for iPhone burst sequences
+- **Improved Video Handling**: Optional ffmpeg frame fallback and clearer video diagnostics when `--include-videos` is enabled
 - **Dry Run Mode**: Preview changes before applying
 - **Multi-User Support**: Can be run per-user
 - **Resilient API Calls**: Built-in timeout and retry/backoff for transient API failures
 - **Docker Ready**: Includes a container image and publish workflow
-
-## Requirements
-
-- Python 3.8+
-- Dependencies listed in `requirements.txt`
-
-```bash
-pip install -r requirements.txt
-```
-
-For local testing and coverage:
-
-```bash
-pip install -r requirements-dev.txt
-pytest tests --cov=immich_smart_stacker --cov-report=term
-```
 
 ## Setup
 
@@ -148,6 +131,9 @@ docker pull docker.io/myrveln/immich-smart-stacker:latest
 - `--dry-run`: Preview stacks without creating them
 - `--unstack-all`: Delete stacks instead of creating them (scoped by `--user-filter` when provided)
 - `--include-videos`: Also try hashing videos (disabled by default; image-only is more reliable)
+- `--video-frame-fallback`: For videos, attempt ffmpeg frame extraction if thumbnail hashing fails (off by default)
+- `--video-skip-preview` / `--no-video-skip-preview`: Control whether video preview `404` skips thumbnail fallback request (default: skip)
+- `--video-frame-fallback-timeout` (default: 10.0): Timeout in seconds for ffmpeg frame extraction fallback
 - `--verbose`: Enable debug logging
 
 Notes:
@@ -250,17 +236,18 @@ docker run --rm \
 - Ensure API key includes `asset:view` (and `asset:read`).
 - Run without `--verbose` for minimal output, or with `--user-filter <ownerId>` to scope processing.
 
-## Comparison: Majorfi vs Smart Stacker
+## Comparison: [immich-stack](https://github.com/Majorfi/immich-stack) vs immich-smart-stacker
 
-| Feature | Majorfi | Smart Stacker |
+| Capability | immich-stack | immich-smart-stacker |
 |---------|---------|---------------|
-| Filename matching | ✓ | ✗ (uses timestamps) |
-| Visual similarity | ✗ | ✓ (perceptual hash) |
-| Temporal grouping | Limited | ✓ (configurable) |
-| iPhone bursts | Needs filename pattern | ✓ (automatic) |
-| Regex support | ✓ | ✗ |
+| Matching approach | Filename/regex pattern matching | Temporal proximity + visual similarity (perceptual hash) |
+| Visual similarity grouping | ✗ | ✓ |
+| Temporal burst grouping | Limited | ✓ (configurable `--temporal-window`) |
+| Tuning strictness | Pattern/regex driven | Hash-distance driven (`--hash-threshold`) |
+| Burst/near-duplicate focus | Partial | Strong |
+| Best fit | RAW+JPG style filename pairing | iPhone bursts and near-duplicate cleanup |
 
-**Recommendation**: Use Majorfi for RAW+JPG variants (filename-based), and Smart Stacker for burst detection (temporal + visual).
+**Recommendation**: Use [immich-stack](https://github.com/Majorfi/immich-stack) for filename/pattern-driven pairing, and immich-smart-stacker for burst detection (temporal + visual).
 
 ## Security Notes
 
@@ -277,6 +264,9 @@ The Docker image reads these variables:
 - `TEMPORAL_WINDOW`: Optional temporal window in seconds
 - `HASH_THRESHOLD`: Optional visual similarity threshold
 - `INCLUDE_VIDEOS`: Set to `true` to enable video hashing
+- `VIDEO_FRAME_FALLBACK`: Set to `true` to try ffmpeg frame extraction for videos when thumbnails fail
+- `VIDEO_SKIP_PREVIEW`: Set to `true` (default) to skip thumbnail fallback request when video preview is missing
+- `VIDEO_FRAME_FALLBACK_TIMEOUT`: Timeout in seconds for ffmpeg fallback frame extraction
 - `DRY_RUN`: Set to `true` to preview only
 - `UNSTACK_ALL`: Set to `true` to delete all matching stacks
 - `SMART_STACKER_STATE_FILE`: Optional path for the local idempotency cache

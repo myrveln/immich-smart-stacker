@@ -5,6 +5,8 @@ import argparse
 import hashlib
 import logging
 import os
+import shutil
+import subprocess
 import sys
 import time
 from datetime import datetime, timedelta
@@ -308,7 +310,12 @@ class ImmichClient:
             logger.debug(f"Could not resolve current user id from /users/me: {exc}")
             return None
 
-    def get_asset_thumbnail(self, asset_id: str) -> Optional[Image.Image]:
+    def get_asset_thumbnail(
+        self,
+        asset_id: str,
+        asset_type: Optional[str] = None,
+        skip_video_preview_404: bool = True,
+    ) -> Optional[Image.Image]:
         """Download thumbnail for an asset."""
         self.last_thumbnail_status = None
 
@@ -323,6 +330,11 @@ class ImmichClient:
 
             # Asset media may not be generated/available yet (common for some videos).
             if resp.status_code == 404:
+                if asset_type == 'video' and size == 'preview' and skip_video_preview_404:
+                    logger.debug(
+                        f"Video preview not available for {asset_id}; skipping thumbnail fallback request"
+                    )
+                    return None
                 continue
 
             # Common when metadata includes assets not accessible by this API key.
@@ -351,6 +363,56 @@ class ImmichClient:
 
         logger.debug(f"Thumbnail not found for asset {asset_id}; skipping hash")
         return None
+
+    def get_video_frame_from_playback(
+        self,
+        asset_id: str,
+        ffmpeg_timeout: float = 10.0,
+    ) -> Tuple[Optional[Image.Image], str]:
+        """Attempt to extract a frame from the video playback endpoint via ffmpeg."""
+        ffmpeg_bin = shutil.which('ffmpeg')
+        if not ffmpeg_bin:
+            return None, 'ffmpeg-unavailable'
+
+        playback_url = f"{self.api_url}/assets/{asset_id}/video/playback"
+        command = [
+            ffmpeg_bin,
+            '-loglevel',
+            'error',
+            '-headers',
+            f"x-api-key: {self.api_key}\r\n",
+            '-i',
+            playback_url,
+            '-frames:v',
+            '1',
+            '-f',
+            'image2pipe',
+            '-vcodec',
+            'png',
+            'pipe:1',
+        ]
+
+        try:
+            proc = subprocess.run(
+                command,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+                timeout=ffmpeg_timeout,
+            )
+        except subprocess.TimeoutExpired:
+            return None, 'ffmpeg-timeout'
+        except Exception:
+            return None, 'ffmpeg-error'
+
+        if proc.returncode != 0 or not proc.stdout:
+            return None, 'ffmpeg-no-frame'
+
+        try:
+            image = Image.open(BytesIO(proc.stdout)).convert('RGB')
+            return image, 'ffmpeg-frame'
+        except Exception:
+            return None, 'ffmpeg-decode-error'
 
     def create_stack(self, primary_asset_id: str, stacked_asset_ids: List[str]) -> bool:
         """Create a stack with given assets."""
@@ -442,7 +504,10 @@ class SmartStacker:
     def __init__(self, client: ImmichClient, temporal_window: float = 2.0,
                  hash_threshold: int = 8, dry_run: bool = False, include_videos: bool = False,
                  state_file: Optional[Path] = None, run_key: Optional[str] = None,
-                 run_scope: Optional[str] = None):
+                 run_scope: Optional[str] = None,
+                 video_skip_preview_404: bool = True,
+                 video_frame_fallback: bool = False,
+                 video_frame_fallback_timeout: float = 10.0):
         self.client = client
         self.temporal_window = timedelta(seconds=temporal_window)
         self.hash_threshold = hash_threshold
@@ -450,6 +515,9 @@ class SmartStacker:
         self.include_videos = include_videos
         self.state_file = state_file
         self.run_scope = run_scope if run_scope is not None else '__all_users__'
+        self.video_skip_preview_404 = video_skip_preview_404
+        self.video_frame_fallback = video_frame_fallback
+        self.video_frame_fallback_timeout = video_frame_fallback_timeout
         self.run_key = run_key or self._build_run_key()
         self.hashes: Dict[str, str] = {}
         self.existing_stacks = client.get_existing_stacks()
@@ -457,6 +525,7 @@ class SmartStacker:
         self.inaccessible_assets_logged = 0
         self.inaccessible_by_user: Dict[str, int] = {}
         self.inaccessible_by_status: Dict[str, int] = {}
+        self.video_events: Dict[str, int] = {}
         self.seen_signatures: Set[str] = self._load_seen_signatures()
         self.seen_signatures.update(
             self._signature(stack_assets)
@@ -479,6 +548,10 @@ class SmartStacker:
 
         status_key = str(status_code) if status_code is not None else 'unknown'
         self.inaccessible_by_status[status_key] = self.inaccessible_by_status.get(status_key, 0) + 1
+
+    def _record_video_event(self, reason: str) -> None:
+        """Track video-specific handling reasons for diagnostics."""
+        self.video_events[reason] = self.video_events.get(reason, 0) + 1
 
     def _load_seen_signatures(self) -> Set[str]:
         """Load previously processed stack signatures for this configuration."""
@@ -534,8 +607,34 @@ class SmartStacker:
             return None
 
         try:
-            thumbnail = self.client.get_asset_thumbnail(asset.id)
+            thumbnail = self.client.get_asset_thumbnail(
+                asset.id,
+                asset_type=asset.type,
+                skip_video_preview_404=self.video_skip_preview_404,
+            )
+
+            if thumbnail is None and asset.type == 'video' and self.video_frame_fallback:
+                frame, reason = self.client.get_video_frame_from_playback(
+                    asset.id,
+                    ffmpeg_timeout=self.video_frame_fallback_timeout,
+                )
+                self._record_video_event(reason)
+                if frame is not None:
+                    self._record_video_event('frame-fallback-used')
+                    thumbnail = frame
+
             if thumbnail is None:
+                if asset.type == 'video':
+                    status = self.client.last_thumbnail_status
+                    if status == 404 and self.video_skip_preview_404:
+                        self._record_video_event('preview-unsupported')
+                    elif status in (401, 403):
+                        self._record_video_event('thumbnail-access-denied')
+                    elif status is not None:
+                        self._record_video_event(f'thumbnail-http-{status}')
+                    else:
+                        self._record_video_event('thumbnail-unknown')
+
                 self._record_unhashable_asset(asset, self.client.last_thumbnail_status)
                 # Avoid flooding logs in large libraries.
                 if self.inaccessible_assets_logged < 10:
@@ -811,6 +910,11 @@ class SmartStacker:
                 f"{top_users_text}. Consider --user-filter <ownerId> to scope processing."
             )
             logger.warning(f"Unhashable thumbnail status distribution: {top_statuses_text}")
+            if self.video_events:
+                video_events_text = ', '.join(
+                    [f"{reason}:{count}" for reason, count in sorted(self.video_events.items(), key=lambda kv: kv[1], reverse=True)]
+                )
+                logger.warning(f"Video handling events: {video_events_text}")
             if assets and (self.inaccessible_assets_count / len(assets)) > 0.2:
                 logger.warning(
                     "High inaccessible ratio detected. Verify API key permissions include asset.view "
@@ -887,6 +991,17 @@ def main():
     parser.add_argument('--include-videos', action='store_true',
                        default=env_bool('INCLUDE_VIDEOS', False),
                        help='Also attempt hashing for video assets (off by default)')
+    parser.add_argument('--video-frame-fallback', action='store_true',
+                       default=env_bool('VIDEO_FRAME_FALLBACK', False),
+                       help='When video thumbnail hashing fails, try extracting a frame via ffmpeg playback endpoint')
+    parser.add_argument('--video-skip-preview', dest='video_skip_preview', action='store_true',
+                       default=env_bool('VIDEO_SKIP_PREVIEW', True),
+                       help='For videos, skip thumbnail fallback request after preview 404 (default: enabled)')
+    parser.add_argument('--no-video-skip-preview', dest='video_skip_preview', action='store_false',
+                       help='For videos, allow thumbnail fallback request even when preview returns 404')
+    parser.add_argument('--video-frame-fallback-timeout', type=float,
+                       default=float(os.getenv('VIDEO_FRAME_FALLBACK_TIMEOUT', '10.0')),
+                       help='Timeout in seconds for ffmpeg frame extraction fallback (default: 10.0)')
     parser.add_argument('--state-file', default=os.getenv('SMART_STACKER_STATE_FILE', str(Path(__file__).with_name('.immich-smart-stacker-state.json'))), help='Path to the local idempotency cache file')
     parser.add_argument('--verbose', action='store_true', default=env_bool('VERBOSE', False), help='Enable debug logging')
 
@@ -942,6 +1057,9 @@ def main():
             include_videos=args.include_videos,
             state_file=Path(args.state_file),
             run_scope=effective_user_filter if effective_user_filter else '__all_users__',
+            video_skip_preview_404=args.video_skip_preview,
+            video_frame_fallback=args.video_frame_fallback,
+            video_frame_fallback_timeout=args.video_frame_fallback_timeout,
         )
 
         stacks_created = stacker.run(assets, user_filter=effective_user_filter)

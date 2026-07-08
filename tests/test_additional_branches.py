@@ -56,8 +56,11 @@ class FakeClient:
     def get_existing_stacks(self):
         return dict(self._stacks)
 
-    def get_asset_thumbnail(self, _asset_id):
+    def get_asset_thumbnail(self, _asset_id, asset_type=None, skip_video_preview_404=True):
         return None
+
+    def get_video_frame_from_playback(self, asset_id, ffmpeg_timeout=10.0):
+        return None, "ffmpeg-unavailable"
 
     def create_stack(self, primary, children):
         self.created.append((primary, tuple(children)))
@@ -323,6 +326,7 @@ def test_main_verbose_and_all_users(monkeypatch, tmp_path):
     monkeypatch.setattr(mm.module, "ImmichClient", MainClient)
     monkeypatch.setattr(mm.module, "SmartStacker", MainStacker)
     monkeypatch.setenv("VERBOSE", "true")
+    monkeypatch.setenv("VIDEO_SKIP_PREVIEW", "false")
     monkeypatch.setattr(mm.module.sys, "argv", [
         "prog",
         "--api-url",

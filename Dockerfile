@@ -31,7 +31,8 @@ RUN apk add --no-cache \
         libstdc++ \
         libgcc \
         libjpeg-turbo \
-        zlib \
+    zlib \
+    ffmpeg \
     && addgroup -S app \
     && adduser -S -G app app \
     && mkdir -p /data \
