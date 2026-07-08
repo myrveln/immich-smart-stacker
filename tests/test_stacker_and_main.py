@@ -19,8 +19,11 @@ class FakeClient:
     def get_existing_stacks(self):
         return dict(self._stacks)
 
-    def get_asset_thumbnail(self, asset_id):
+    def get_asset_thumbnail(self, asset_id, asset_type=None, skip_video_preview_404=True):
         return object()
+
+    def get_video_frame_from_playback(self, asset_id, ffmpeg_timeout=10.0):
+        return None, "ffmpeg-unavailable"
 
     def create_stack(self, primary, children):
         self.created.append((primary, tuple(children)))
@@ -107,7 +110,7 @@ def test_compute_hash_paths(monkeypatch, sample_assets):
     video = Asset("v1", "u1", "v.mov", "2024-01-01T00:00:00Z", "2024-01-01T00:00:00Z", "video")
     assert s.compute_hash(video) is None
 
-    c.get_asset_thumbnail = lambda _id: None
+    c.get_asset_thumbnail = lambda *_args, **_kwargs: None
     c.last_thumbnail_status = 403
     assert s.compute_hash(sample_assets[0]) is None
     assert s.inaccessible_assets_count == 1
@@ -119,6 +122,52 @@ def test_compute_hash_paths(monkeypatch, sample_assets):
 
     c.get_asset_thumbnail = explode
     assert s.compute_hash(sample_assets[0]) is None
+
+
+def test_compute_hash_video_frame_fallback(monkeypatch):
+    c = FakeClient()
+    s = SmartStacker(c, include_videos=True, video_frame_fallback=True)
+
+    video = Asset("v1", "u1", "v.mov", "2024-01-01T00:00:00Z", "2024-01-01T00:00:00Z", "video")
+    c.get_asset_thumbnail = lambda *_args, **_kwargs: None
+    c.last_thumbnail_status = 404
+    c.get_video_frame_from_playback = lambda *_args, **_kwargs: (object(), "ffmpeg-frame")
+
+    monkeypatch.setattr(mm.module.imagehash, "average_hash", lambda _img, hash_size=8: "0f")
+    assert s.compute_hash(video) == "0f"
+    assert s.video_events["ffmpeg-frame"] == 1
+    assert s.video_events["frame-fallback-used"] == 1
+
+
+def test_compute_hash_video_preview_unsupported_event():
+    c = FakeClient()
+    s = SmartStacker(c, include_videos=True, video_frame_fallback=False)
+
+    video = Asset("v1", "u1", "v.mov", "2024-01-01T00:00:00Z", "2024-01-01T00:00:00Z", "video")
+    c.get_asset_thumbnail = lambda *_args, **_kwargs: None
+    c.last_thumbnail_status = 404
+    assert s.compute_hash(video) is None
+    assert s.video_events["preview-unsupported"] == 1
+
+
+def test_compute_hash_video_status_event_categorization():
+    c = FakeClient()
+    s = SmartStacker(c, include_videos=True, video_frame_fallback=False)
+    video = Asset("v1", "u1", "v.mov", "2024-01-01T00:00:00Z", "2024-01-01T00:00:00Z", "video")
+
+    c.get_asset_thumbnail = lambda *_args, **_kwargs: None
+
+    c.last_thumbnail_status = 403
+    assert s.compute_hash(video) is None
+    assert s.video_events["thumbnail-access-denied"] == 1
+
+    c.last_thumbnail_status = 500
+    assert s.compute_hash(video) is None
+    assert s.video_events["thumbnail-http-500"] == 1
+
+    c.last_thumbnail_status = None
+    assert s.compute_hash(video) is None
+    assert s.video_events["thumbnail-unknown"] == 1
 
 
 def test_hamming_cluster_and_similarity(sample_assets, monkeypatch):
@@ -223,6 +272,8 @@ def test_run_with_inaccessible_warning_path(monkeypatch, sample_assets, tmp_path
     s = SmartStacker(c, state_file=tmp_path / "s2.json")
     s.inaccessible_assets_count = 1
     s.inaccessible_by_user = {"u1": 1}
+    s.inaccessible_by_status = {"404": 1}
+    s.video_events = {"preview-unsupported": 1}
 
     monkeypatch.setattr(s, "cluster_by_temporal_proximity", lambda _assets: [])
     assert s.run(sample_assets) == 0

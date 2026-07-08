@@ -292,6 +292,104 @@ def test_get_asset_thumbnail_paths():
     assert im is not None
 
 
+def test_get_asset_thumbnail_video_preview_quick_skip():
+    c = ImmichClient("http://x", "k")
+    s = DummySession()
+    s.get_responses = [DummyResp(status_code=404), DummyResp(status_code=200, content=make_image_bytes())]
+    c.session = s
+
+    assert c.get_asset_thumbnail("v1", asset_type="video", skip_video_preview_404=True) is None
+    # Preview 404 should short-circuit for video when enabled.
+    assert len(s.get_calls) == 1
+
+
+def test_get_asset_thumbnail_video_preview_no_quick_skip():
+    c = ImmichClient("http://x", "k")
+    s = DummySession()
+    s.get_responses = [DummyResp(status_code=404), DummyResp(status_code=200, content=make_image_bytes())]
+    c.session = s
+
+    im = c.get_asset_thumbnail("v1", asset_type="video", skip_video_preview_404=False)
+    assert im is not None
+    assert len(s.get_calls) == 2
+
+
+def test_get_video_frame_from_playback_ffmpeg_unavailable(monkeypatch):
+    c = ImmichClient("http://x", "k")
+    monkeypatch.setattr("tests._module.module.shutil.which", lambda _name: None)
+    image, reason = c.get_video_frame_from_playback("v1")
+    assert image is None
+    assert reason == "ffmpeg-unavailable"
+
+
+def test_get_video_frame_from_playback_success(monkeypatch):
+    c = ImmichClient("http://x", "k")
+
+    class Proc:
+        returncode = 0
+        stdout = make_image_bytes()
+        stderr = b""
+
+    monkeypatch.setattr("tests._module.module.shutil.which", lambda _name: "/usr/bin/ffmpeg")
+    monkeypatch.setattr("tests._module.module.subprocess.run", lambda *args, **kwargs: Proc())
+
+    image, reason = c.get_video_frame_from_playback("v1")
+    assert image is not None
+    assert reason == "ffmpeg-frame"
+
+
+def test_get_video_frame_from_playback_timeout(monkeypatch):
+    c = ImmichClient("http://x", "k")
+    monkeypatch.setattr("tests._module.module.shutil.which", lambda _name: "/usr/bin/ffmpeg")
+
+    def raise_timeout(*_args, **_kwargs):
+        raise mm.module.subprocess.TimeoutExpired(cmd=["ffmpeg"], timeout=1)
+
+    monkeypatch.setattr("tests._module.module.subprocess.run", raise_timeout)
+    image, reason = c.get_video_frame_from_playback("v1")
+    assert image is None
+    assert reason == "ffmpeg-timeout"
+
+
+def test_get_video_frame_from_playback_generic_error(monkeypatch):
+    c = ImmichClient("http://x", "k")
+    monkeypatch.setattr("tests._module.module.shutil.which", lambda _name: "/usr/bin/ffmpeg")
+    monkeypatch.setattr("tests._module.module.subprocess.run", lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("x")))
+    image, reason = c.get_video_frame_from_playback("v1")
+    assert image is None
+    assert reason == "ffmpeg-error"
+
+
+def test_get_video_frame_from_playback_no_frame(monkeypatch):
+    c = ImmichClient("http://x", "k")
+
+    class Proc:
+        returncode = 1
+        stdout = b""
+        stderr = b"err"
+
+    monkeypatch.setattr("tests._module.module.shutil.which", lambda _name: "/usr/bin/ffmpeg")
+    monkeypatch.setattr("tests._module.module.subprocess.run", lambda *args, **kwargs: Proc())
+    image, reason = c.get_video_frame_from_playback("v1")
+    assert image is None
+    assert reason == "ffmpeg-no-frame"
+
+
+def test_get_video_frame_from_playback_decode_error(monkeypatch):
+    c = ImmichClient("http://x", "k")
+
+    class Proc:
+        returncode = 0
+        stdout = b"not-an-image"
+        stderr = b""
+
+    monkeypatch.setattr("tests._module.module.shutil.which", lambda _name: "/usr/bin/ffmpeg")
+    monkeypatch.setattr("tests._module.module.subprocess.run", lambda *args, **kwargs: Proc())
+    image, reason = c.get_video_frame_from_playback("v1")
+    assert image is None
+    assert reason == "ffmpeg-decode-error"
+
+
 def test_get_asset_thumbnail_permission_denied_once():
     c = ImmichClient("http://x", "k")
     s = DummySession()
