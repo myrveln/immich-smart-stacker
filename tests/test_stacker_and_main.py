@@ -498,6 +498,7 @@ def test_datetime_and_state_helpers_roundtrip(tmp_path):
     parsed = mm.module._parse_datetime_arg("2026-07-08T12:00:00Z", "--since")
     assert parsed.tzinfo is not None
     assert mm.module._format_datetime_utc(parsed) == "2026-07-08T12:00:00Z"
+    assert mm.module._format_datetime_utc(None) is None
 
     naive = mm.module._parse_datetime_arg("2026-07-08T12:00:00", "--since")
     assert naive.tzinfo is not None
