@@ -36,6 +36,15 @@ docker run --rm \
   docker.io/myrveln/immich-smart-stacker:latest
 ```
 
+You can also use the GHCR image URL instead of Docker Hub:
+
+```bash
+docker run --rm \
+  -e IMMICH_API_URL=http://127.0.0.1:2283/api \
+  -e IMMICH_API_KEY=YOUR_API_KEY \
+  ghcr.io/myrveln/immich-smart-stacker:latest
+```
+
 For a persistent state cache, mount a volume at `/data`:
 
 ```bash
@@ -111,11 +120,15 @@ deactivate
 ## Docker
 
 Docker Hub: [dockerhub/myrveln/immich-smart-stacker](https://hub.docker.com/r/myrveln/immich-smart-stacker)
+GHCR: [ghcr/myrveln/immich-smart-stacker](https://github.com/myrveln/immich-smart-stacker/pkgs/container/immich-smart-stacker)
 
 Pull latest image:
 
 ```bash
 docker pull docker.io/myrveln/immich-smart-stacker:latest
+
+# GHCR equivalent
+docker pull ghcr.io/myrveln/immich-smart-stacker:latest
 ```
 
 ## Configuration
