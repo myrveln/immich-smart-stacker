@@ -1,0 +1,135 @@
+name: Sync Docker Hub tags to GHCR (temporary)
+
+on:
+  workflow_dispatch:
+    inputs:
+      dockerhub_repo:
+        description: Docker Hub repo in namespace/name format
+        required: true
+        default: myrveln/immich-smart-stacker
+        type: string
+      ghcr_image:
+        description: Optional GHCR image override (for example ghcr.io/myrveln/immich-smart-stacker)
+        required: false
+        type: string
+      tags_csv:
+        description: Optional comma-separated tags to sync. Leave empty to sync all tags from Docker Hub.
+        required: false
+        type: string
+      include_latest:
+        description: Include latest when syncing all tags
+        required: false
+        default: true
+        type: boolean
+      dry_run:
+        description: List tags without pushing
+        required: false
+        default: false
+        type: boolean
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Resolve source and target images
+        id: vars
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          src_repo="${{ inputs.dockerhub_repo }}"
+          if [[ -z "$src_repo" || "$src_repo" != */* ]]; then
+            echo "dockerhub_repo must be in namespace/name format" >&2
+            exit 1
+          fi
+
+          target="${{ inputs.ghcr_image }}"
+          if [[ -z "$target" ]]; then
+            owner="${{ github.repository_owner }}"
+            owner="${owner,,}"
+            target="ghcr.io/${owner}/immich-smart-stacker"
+          fi
+
+          echo "src_repo=${src_repo}" >> "$GITHUB_OUTPUT"
+          echo "target_image=${target}" >> "$GITHUB_OUTPUT"
+
+      - name: Log in to Docker Hub
+        if: ${{ secrets.DOCKERHUB_USERNAME != '' && secrets.DOCKERHUB_TOKEN != '' }}
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Sync tags
+        shell: bash
+        env:
+          SRC_REPO: ${{ steps.vars.outputs.src_repo }}
+          TARGET_IMAGE: ${{ steps.vars.outputs.target_image }}
+          TAGS_CSV: ${{ inputs.tags_csv }}
+          INCLUDE_LATEST: ${{ inputs.include_latest }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          set -euo pipefail
+
+          list_all_tags() {
+            local repo="$1"
+            local url="https://hub.docker.com/v2/repositories/${repo}/tags?page_size=100"
+
+            while [[ -n "$url" && "$url" != "null" ]]; do
+              local payload
+              payload="$(curl -fsSL "$url")"
+              echo "$payload" | jq -r '.results[].name'
+              url="$(echo "$payload" | jq -r '.next // empty')"
+            done
+          }
+
+          normalize_input_tags() {
+            echo "$1" | tr ',' '\n' | sed 's/^ *//; s/ *$//' | sed '/^$/d'
+          }
+
+          if [[ -n "${TAGS_CSV}" ]]; then
+            mapfile -t tags < <(normalize_input_tags "${TAGS_CSV}" | sort -u)
+          else
+            mapfile -t tags < <(list_all_tags "${SRC_REPO}" | sort -u)
+          fi
+
+          if [[ "${#tags[@]}" -eq 0 ]]; then
+            echo "No tags found to sync." >&2
+            exit 1
+          fi
+
+          echo "Found ${#tags[@]} tag(s) to process."
+          echo "Source: docker.io/${SRC_REPO}"
+          echo "Target: ${TARGET_IMAGE}"
+
+          for tag in "${tags[@]}"; do
+            if [[ "$tag" == "latest" && "${INCLUDE_LATEST}" != "true" ]]; then
+              echo "Skipping latest (include_latest=false)"
+              continue
+            fi
+
+            src_ref="docker.io/${SRC_REPO}:${tag}"
+            dst_ref="${TARGET_IMAGE}:${tag}"
+            echo "Syncing ${src_ref} -> ${dst_ref}"
+
+            if [[ "${DRY_RUN}" == "true" ]]; then
+              continue
+            fi
+
+            docker pull "${src_ref}"
+            docker tag "${src_ref}" "${dst_ref}"
+            docker push "${dst_ref}"
+
+            docker image rm "${src_ref}" "${dst_ref}" >/dev/null 2>&1 || true
+          done
