@@ -26,6 +26,7 @@ Smart visual similarity grouping for Immich photos, designed for iPhone burst de
 ### Run with Docker
 
 Docker is the recommended way to run Immich Smart Stacker.
+Docker Hub: [dockerhub/myrveln/immich-smart-stacker](https://hub.docker.com/r/myrveln/immich-smart-stacker)
 
 Run the published image with environment variables:
 
@@ -159,6 +160,54 @@ docker run --rm \
   -e DRY_RUN=true \
   docker.io/myrveln/immich-smart-stacker:latest
 ```
+
+## Example: Watermark and Scheduled Modes
+
+### Use watermark for recurring one-shot runs
+
+Use this mode when an external scheduler (cron, systemd timer, Kubernetes CronJob) runs the container repeatedly.
+
+```bash
+docker run --rm \
+  -v "$PWD/data:/data" \
+  -e IMMICH_API_URL=http://127.0.0.1:2283/api \
+  -e IMMICH_API_KEY=YOUR_KEY \
+  -e USE_WATERMARK=true \
+  docker.io/myrveln/immich-smart-stacker:latest
+```
+
+### Use internal scheduled loop mode
+
+Use this mode when one container should keep running and execute periodically.
+
+```bash
+docker run --rm \
+  -v "$PWD/data:/data" \
+  -e IMMICH_API_URL=http://127.0.0.1:2283/api \
+  -e IMMICH_API_KEY=YOUR_KEY \
+  -e INTERVAL_SECONDS=3600 \
+  docker.io/myrveln/immich-smart-stacker:latest
+```
+
+### Use `USE_WATERMARK` and `INTERVAL_SECONDS` together
+
+This is the recommended mode for long-running incremental processing in one container.
+
+```bash
+docker run --rm \
+  -v "$PWD/data:/data" \
+  -e IMMICH_API_URL=http://127.0.0.1:2283/api \
+  -e IMMICH_API_KEY=YOUR_KEY \
+  -e USE_WATERMARK=true \
+  -e INTERVAL_SECONDS=3600 \
+  -e MAX_RUNS=24 \
+  docker.io/myrveln/immich-smart-stacker:latest
+```
+
+Behavior notes:
+- `USE_WATERMARK=true` loads the previous successful high-water timestamp from `SMART_STACKER_STATE_FILE` and saves a new value after each successful run.
+- Keep `/data` mounted so watermark and idempotency state persist across container restarts.
+- If `SINCE` or `LAST_N_DAYS` is set, watermark auto-load is skipped for that run by design.
 
 ## Troubleshooting
 
