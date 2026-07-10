@@ -27,6 +27,7 @@ Smart visual similarity grouping for Immich photos, designed for iPhone burst de
 
 Docker is the recommended way to run Immich Smart Stacker.
 Docker Hub: [dockerhub/myrveln/immich-smart-stacker](https://hub.docker.com/r/myrveln/immich-smart-stacker)
+GHCR: [ghcr/myrveln/immich-smart-stacker](https://github.com/myrveln/immich-smart-stacker/pkgs/container/immich-smart-stacker)
 
 Run the published image with environment variables:
 
@@ -82,9 +83,6 @@ Notes:
 - Create a key in Immich with `asset:view`, `asset:read`, and `stack:*` permissions.
 - For all optional runtime environment variables, see [Configuration](#configuration).
 - Keep the `/data` volume in place for repeated scheduled runs so idempotency state persists.
-
-Docker Hub: [dockerhub/myrveln/immich-smart-stacker](https://hub.docker.com/r/myrveln/immich-smart-stacker)
-GHCR: [ghcr/myrveln/immich-smart-stacker](https://github.com/myrveln/immich-smart-stacker/pkgs/container/immich-smart-stacker)
 
 ## Configuration
 
