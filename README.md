@@ -1,6 +1,6 @@
 # Immich Smart Stacker
 
-[![codecov](https://codecov.io/gh/myrveln/immich-smart-stacker/branch/master/graph/badge.svg)](https://app.codecov.io/gh/myrveln/immich-smart-stacker)
+[![Tests](https://github.com/myrveln/immich-smart-stacker/actions/workflows/test.yml/badge.svg?branch=master)](https://github.com/myrveln/immich-smart-stacker/actions/workflows/test.yml) [![Release](https://github.com/myrveln/immich-smart-stacker/actions/workflows/release.yml/badge.svg?branch=master)](https://github.com/myrveln/immich-smart-stacker/actions/workflows/release.yml) [![Docker Pulls](https://img.shields.io/docker/pulls/myrveln/immich-smart-stacker)](https://hub.docker.com/r/myrveln/immich-smart-stacker) [![codecov](https://codecov.io/gh/myrveln/immich-smart-stacker/branch/master/graph/badge.svg)](https://app.codecov.io/gh/myrveln/immich-smart-stacker)
 
 Smart visual similarity grouping for Immich photos, designed for iPhone burst detection and similar photo sequences.
 
@@ -55,7 +55,7 @@ docker run --rm \
   docker.io/myrveln/immich-smart-stacker:latest
 ```
 
-For all optional runtime environment variables, see [Environment Variables](#environment-variables).
+For all optional runtime environment variables, see [Configuration](#configuration).
 
 For repeated scheduled runs, keep `/data` mounted so the local idempotency cache is preserved between container executions.
 
@@ -79,87 +79,39 @@ Notes:
 - `IMMICH_API_URL` uses the Immich server container name on the same Compose network (`immich-server` is the default service name in many Immich setups).
 - Put `IMMICH_API_KEY` in your `.env` file next to `docker-compose.yml`.
 - Create a key in Immich with `asset:view`, `asset:read`, and `stack:*` permissions.
-- For all optional runtime environment variables, see [Environment Variables](#environment-variables).
+- For all optional runtime environment variables, see [Configuration](#configuration).
 - Keep the `/data` volume in place for repeated scheduled runs so idempotency state persists.
-
-Start or update the service:
-
-```bash
-docker compose up -d immich-smart-stacker
-```
-
-See the [Docker](#docker) section for image links and pull details.
-
-## Development (Local)
-
-Use local Python only for development, debugging, and tests. Regular usage should use Docker or docker-compose.
-
-### Python venv setup
-
-```bash
-# From the smart-stacker directory
-python3 -m venv .venv
-source .venv/bin/activate
-
-# Install dependencies inside the venv for local development
-pip install -r requirements.txt
-
-# Module entrypoint (new package layout)
-python -m immich_smart_stacker --help
-
-# Backward-compatible script entrypoint
-python immich-smart-stacker.py --help
-```
-
-Deactivate when done:
-
-```bash
-deactivate
-```
-
-## Docker
 
 Docker Hub: [dockerhub/myrveln/immich-smart-stacker](https://hub.docker.com/r/myrveln/immich-smart-stacker)
 GHCR: [ghcr/myrveln/immich-smart-stacker](https://github.com/myrveln/immich-smart-stacker/pkgs/container/immich-smart-stacker)
 
-Pull latest image:
-
-```bash
-docker pull docker.io/myrveln/immich-smart-stacker:latest
-
-# GHCR equivalent
-docker pull ghcr.io/myrveln/immich-smart-stacker:latest
-```
-
 ## Configuration
 
-### Command Line Arguments
+The table below maps environment variables to their equivalent command line arguments.
 
-- `--api-url` (required unless `IMMICH_API_URL` is set): Immich API URL (e.g., `http://localhost:2283` or `http://localhost:2283/api`)
-- `--api-key` (required unless `IMMICH_API_KEY` is set): Immich API key with `asset:view`, `asset:read`, and `stack:*` permissions
-- `--user-filter`: Filter results to specific user ID (optional)
-- `--all-users`: Process all users returned by the API (by default, script auto-filters to current user)
-- `--temporal-window` (default: 2.0): Burst detection window in seconds
-  - iPhone bursts: ~0-10ms between frames; 2 seconds captures most bursts
-  - Adjust up if you want more lenient grouping
-- `--since`: Only process assets created at/after this ISO-8601 timestamp
-- `--until`: Only process assets created at/before this ISO-8601 timestamp
-- `--last-n-days`: Only process assets from the last N days (overrides `--since`)
-- `--use-watermark`: Reuse and persist a last-successful timestamp in the state file for incremental recurring runs
-- `--hash-threshold` (default: 8): Hamming distance threshold for visual similarity
-  - Lower = stricter matching (fewer false positives)
-  - 5-8 = good for burst detection (same motive, rapid succession)
-  - 10-15 = lenient (catches similar compositions)
-- `--dry-run`: Preview stacks without creating them
-- `--unstack-all`: Delete stacks instead of creating them (scoped by `--user-filter` when provided)
-- `--include-videos`: Also try hashing videos (disabled by default; image-only is more reliable)
-- `--video-frame-fallback`: For videos, attempt ffmpeg frame extraction if thumbnail hashing fails (off by default)
-- `--video-skip-preview` / `--no-video-skip-preview`: Control whether video preview `404` skips thumbnail fallback request (default: skip)
-- `--video-frame-fallback-timeout` (default: 10.0): Timeout in seconds for ffmpeg frame extraction fallback
-- `--interval-seconds` (default: 0): Enable scheduled mode and sleep this many seconds between runs
-- `--max-runs` (optional): Stop scheduled mode after N iterations (useful for testing or bounded jobs)
-- `--output-json`: Emit machine-readable JSON summary to stdout
-- `--verbose`: Enable debug logging
+| Environment Variable | CLI Argument | Default | Description |
+|---|---|---|---|
+| `IMMICH_API_URL` | `--api-url` | none | Immich API URL. Required unless `--api-url` is provided. |
+| `IMMICH_API_KEY` | `--api-key` | none | Immich API key. Required unless `--api-key` is provided. |
+| `IMMICH_USER_FILTER` | `--user-filter` | empty | Restrict processing to one user ID. |
+| `ALL_USERS` | `--all-users` | false | Process all users instead of auto-scoping to current user. |
+| `TEMPORAL_WINDOW` | `--temporal-window` | 2.0 | Temporal grouping window in seconds for burst clustering. |
+| `SINCE` | `--since` | empty | ISO-8601 lower bound timestamp. |
+| `UNTIL` | `--until` | empty | ISO-8601 upper bound timestamp. |
+| `LAST_N_DAYS` | `--last-n-days` | empty | Rolling lookback window in days. Overrides `SINCE`. |
+| `USE_WATERMARK` | `--use-watermark` | false | Enable incremental watermark load/save. Auto-load is skipped when `SINCE` or `LAST_N_DAYS` is set. |
+| `HASH_THRESHOLD` | `--hash-threshold` | 8 | Visual similarity threshold. Lower is stricter. |
+| `DRY_RUN` | `--dry-run` | false | Preview mode; no stack writes are made. |
+| `UNSTACK_ALL` | `--unstack-all` | false | Delete stacks instead of creating/merging stacks. |
+| `INCLUDE_VIDEOS` | `--include-videos` | false | Include video assets in hashing flow. |
+| `VIDEO_FRAME_FALLBACK` | `--video-frame-fallback` | false | Use ffmpeg frame extraction when video thumbnail hashing fails. |
+| `VIDEO_SKIP_PREVIEW` | `--video-skip-preview` / `--no-video-skip-preview` | true | Control whether preview `404` skips thumbnail fallback request. |
+| `VIDEO_FRAME_FALLBACK_TIMEOUT` | `--video-frame-fallback-timeout` | 10.0 | Timeout (seconds) for ffmpeg frame extraction fallback. |
+| `INTERVAL_SECONDS` | `--interval-seconds` | 0 | Scheduled loop interval in seconds. `0` means run once. |
+| `MAX_RUNS` | `--max-runs` | empty | Optional cap on scheduled loop iterations. |
+| `OUTPUT_JSON` | `--output-json` | false | Emit machine-readable JSON summary. |
+| `VERBOSE` | `--verbose` | false | Enable debug logging. |
+| `SMART_STACKER_STATE_FILE` | `--state-file` | `/data/.immich-smart-stacker-state.json` | Path used for idempotency cache and incremental watermark state. |
 
 Notes:
 - `--verbose` now focuses on script internals and avoids noisy low-level HTTP connection spam.
@@ -270,6 +222,56 @@ docker run --rm \
 - Ensure API key includes `asset:view` (and `asset:read`).
 - Run without `--verbose` for minimal output, or with `--user-filter <ownerId>` to scope processing.
 
+### "No assets found"
+- Verify `IMMICH_API_URL` points to the Immich server API endpoint that this container can reach.
+- Check whether your API key can read metadata (`asset:read`).
+- If you use `IMMICH_USER_FILTER`, confirm that user actually owns assets in your library.
+- If you use `SINCE`, `UNTIL`, or `LAST_N_DAYS`, your time window may currently exclude all assets.
+
+### Scheduled mode runs only once (or exits immediately)
+- Set `INTERVAL_SECONDS` to a value greater than `0`.
+- If `MAX_RUNS` is set, the container exits after that many iterations by design.
+- Remove `MAX_RUNS` for continuous daemon behavior.
+
+### Watermark is not being used
+- `USE_WATERMARK=true` only auto-loads when neither `SINCE` nor `LAST_N_DAYS` is set.
+- If you set `SINCE` or `LAST_N_DAYS`, that explicit filter takes precedence for the run.
+- Ensure `SMART_STACKER_STATE_FILE` points to a writable location.
+
+### Watermark/state resets after container restart
+- Mount persistent storage for `/data` (for example `-v "$PWD/data:/data"`).
+- Keep `SMART_STACKER_STATE_FILE` stable across runs (default: `/data/.immich-smart-stacker-state.json`).
+- If you run with ephemeral containers and no volume mount, watermark/idempotency state is lost.
+
+### Video frame fallback is not used
+- Enable both `INCLUDE_VIDEOS=true` and `VIDEO_FRAME_FALLBACK=true`.
+- Keep `VIDEO_SKIP_PREVIEW=true` for the default fast path on missing previews.
+- If ffmpeg extraction fails, increase `VIDEO_FRAME_FALLBACK_TIMEOUT`.
+
+## Development (Local)
+
+Use local Python only for development, debugging, and tests. Regular usage should use Docker or docker-compose.
+
+### Python venv setup
+
+```bash
+# From the repository root
+python3 -m venv .venv
+source .venv/bin/activate
+
+# Install dependencies inside the venv for local development
+pip install -r requirements.txt
+
+# Module entrypoint
+python -m immich_smart_stacker --help
+```
+
+Deactivate when done:
+
+```bash
+deactivate
+```
+
 ## Comparison: [immich-stack](https://github.com/Majorfi/immich-stack) vs immich-smart-stacker
 
 | Capability | immich-stack | immich-smart-stacker |
@@ -287,30 +289,6 @@ docker run --rm \
 
 - Store API keys in environment variables or `.env` file (never hardcode)
 - Smart Stacker only reads assets and manages stacks; `--unstack-all` is the only delete mode
-
-## Environment Variables
-
-The Docker image reads these variables:
-
-- `IMMICH_API_URL`: Immich API base URL, usually ending in `/api`
-- `IMMICH_API_KEY`: Immich API key
-- `IMMICH_USER_FILTER`: Optional user ID filter
-- `TEMPORAL_WINDOW`: Optional temporal window in seconds
-- `SINCE`: Optional ISO-8601 lower time bound
-- `UNTIL`: Optional ISO-8601 upper time bound
-- `LAST_N_DAYS`: Optional rolling lookback window in days
-- `USE_WATERMARK`: Set to `true` to load/save incremental watermark from state file
-- `HASH_THRESHOLD`: Optional visual similarity threshold
-- `INCLUDE_VIDEOS`: Set to `true` to enable video hashing
-- `VIDEO_FRAME_FALLBACK`: Set to `true` to try ffmpeg frame extraction for videos when thumbnails fail
-- `VIDEO_SKIP_PREVIEW`: Set to `true` (default) to skip thumbnail fallback request when video preview is missing
-- `VIDEO_FRAME_FALLBACK_TIMEOUT`: Timeout in seconds for ffmpeg fallback frame extraction
-- `DRY_RUN`: Set to `true` to preview only
-- `UNSTACK_ALL`: Set to `true` to delete all matching stacks
-- `INTERVAL_SECONDS`: Set to `>0` to enable scheduled loop mode
-- `MAX_RUNS`: Optional limit on loop iterations when scheduled mode is enabled
-- `OUTPUT_JSON`: Set to `true` to emit machine-readable run summary JSON
-- `SMART_STACKER_STATE_FILE`: Optional path for local idempotency cache and incremental watermark storage
 
 ## Testing and Coverage
 
