@@ -1,6 +1,6 @@
 # Immich Smart Stacker
 
-[![Tests](https://github.com/myrveln/immich-smart-stacker/actions/workflows/test.yml/badge.svg?branch=master)](https://github.com/myrveln/immich-smart-stacker/actions/workflows/test.yml) [![codecov](https://codecov.io/gh/myrveln/immich-smart-stacker/branch/master/graph/badge.svg)](https://app.codecov.io/gh/myrveln/immich-smart-stacker) [![Release](https://github.com/myrveln/immich-smart-stacker/actions/workflows/release.yml/badge.svg?branch=master)](https://github.com/myrveln/immich-smart-stacker/actions/workflows/release.yml) [![Docker Pulls](https://img.shields.io/docker/pulls/myrveln/immich-smart-stacker)](https://hub.docker.com/r/myrveln/immich-smart-stacker)
+[![Tests](https://github.com/myrveln/immich-smart-stacker/actions/workflows/test.yml/badge.svg?branch=master)](https://github.com/myrveln/immich-smart-stacker/actions/workflows/test.yml) [![Release](https://github.com/myrveln/immich-smart-stacker/actions/workflows/release.yml/badge.svg?branch=master)](https://github.com/myrveln/immich-smart-stacker/actions/workflows/release.yml) [![Docker Pulls](https://img.shields.io/docker/pulls/myrveln/immich-smart-stacker)](https://hub.docker.com/r/myrveln/immich-smart-stacker) [![codecov](https://codecov.io/gh/myrveln/immich-smart-stacker/branch/master/graph/badge.svg)](https://app.codecov.io/gh/myrveln/immich-smart-stacker)
 
 Smart visual similarity grouping for Immich photos, designed for iPhone burst detection and similar photo sequences.
 
@@ -27,6 +27,7 @@ Smart visual similarity grouping for Immich photos, designed for iPhone burst de
 
 Docker is the recommended way to run Immich Smart Stacker.
 Docker Hub: [dockerhub/myrveln/immich-smart-stacker](https://hub.docker.com/r/myrveln/immich-smart-stacker)
+GHCR: [ghcr/myrveln/immich-smart-stacker](https://github.com/myrveln/immich-smart-stacker/pkgs/container/immich-smart-stacker)
 
 Run the published image with environment variables:
 
@@ -35,6 +36,15 @@ docker run --rm \
   -e IMMICH_API_URL=http://127.0.0.1:2283/api \
   -e IMMICH_API_KEY=YOUR_API_KEY \
   docker.io/myrveln/immich-smart-stacker:latest
+```
+
+You can also use the GHCR image URL instead of Docker Hub:
+
+```bash
+docker run --rm \
+  -e IMMICH_API_URL=http://127.0.0.1:2283/api \
+  -e IMMICH_API_KEY=YOUR_API_KEY \
+  ghcr.io/myrveln/immich-smart-stacker:latest
 ```
 
 For a persistent state cache, mount a volume at `/data`:
