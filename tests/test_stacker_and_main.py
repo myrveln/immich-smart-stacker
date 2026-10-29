@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+import immich_smart_stacker.cli as stacker_cli
 from tests._module import Asset, SmartStacker, main, unstack_all
 import tests._module as mm
 
@@ -707,3 +708,75 @@ def test_main_last_n_days_overrides_since(monkeypatch, tmp_path):
     assert main() == 0
     assert captured["since_dt"] is not None
     assert captured["since_dt"] > datetime.now(timezone.utc) - timedelta(days=2)
+
+
+def test_resolve_profiles_user_filter_shorthand():
+    args = stacker_cli.parse_args(
+        [
+            "--api-url",
+            "http://x",
+            "--api-key",
+            "key",
+            "--user-filters",
+            "u1, u2",
+        ]
+    )
+
+    profiles = stacker_cli._resolve_profiles(args)
+
+    assert [profile.user_filter for profile in profiles] == ["u1", "u2"]
+    assert [profile.profile_name for profile in profiles] == ["user-u1", "user-u2"]
+
+
+def test_main_profiles_continue_after_failure_and_aggregate(monkeypatch, tmp_path, capsys):
+    profile_file = tmp_path / "profiles.json"
+    profile_file.write_text(
+        json.dumps(
+            {
+                "profiles": [
+                    {"name": "failed", "apiUrl": "http://x", "apiKeyEnv": "FAIL_KEY", "userFilter": "u1"},
+                    {"name": "first", "apiUrl": "http://x", "apiKeyEnv": "GOOD_KEY", "userFilter": "u1"},
+                    {"name": "second", "apiUrl": "http://x", "apiKey": "${GOOD_KEY}", "userFilter": "u1"},
+                ]
+            }
+        )
+    )
+    monkeypatch.setenv("FAIL_KEY", "bad")
+    monkeypatch.setenv("GOOD_KEY", "good")
+    run_scopes = []
+
+    class BatchClient(FakeClient):
+        def __init__(self, api_url, api_key):
+            if api_key == "bad":
+                raise RuntimeError("profile unavailable")
+            super().__init__()
+
+        def get_all_assets(self):
+            return [
+                Asset("a", "u1", "a", "2024-01-01T00:00:00Z", "2024-01-01T00:00:00Z", "image"),
+                Asset("b", "u1", "b", "2024-01-01T00:00:01Z", "2024-01-01T00:00:01Z", "image"),
+            ]
+
+    class BatchStacker:
+        def __init__(self, _client, **kwargs):
+            run_scopes.append(kwargs["run_scope"])
+            self.last_run_summary = {"stacksCreated": 1, "assetsAfterUserFilter": 2}
+
+        def run(self, _assets, user_filter=None):
+            return 1
+
+    result = stacker_cli.main(
+        ["--profiles-file", str(profile_file), "--output-json"],
+        immich_client_cls=BatchClient,
+        stacker_cls=BatchStacker,
+    )
+
+    assert result == 1
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "error"
+    assert payload["profileCount"] == 3
+    assert payload["failedProfiles"] == 1
+    assert [profile["status"] for profile in payload["profiles"]] == ["error", "ok", "ok"]
+    assert payload["summary"]["stacksCreated"] == 2
+    assert len(run_scopes) == 2
+    assert run_scopes[0] != run_scopes[1]
