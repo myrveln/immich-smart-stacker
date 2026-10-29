@@ -266,6 +266,131 @@ def test_run_uses_primary_heuristics(monkeypatch, tmp_path):
     assert c.created[0][0] == "b"
 
 
+def test_cross_user_groups_materialize_only_authenticated_owner_assets(monkeypatch, tmp_path):
+    client = FakeClient()
+    stacker = SmartStacker(client, dry_run=False, state_file=tmp_path / "cross-user.json")
+    assets = [
+        Asset("a1", "owner-a", "a1.jpg", "2024-01-01T00:00:00Z", "2024-01-01T00:00:00Z", "image"),
+        Asset("a2", "owner-a", "a2.jpg", "2024-01-01T00:00:01Z", "2024-01-01T00:00:01Z", "image"),
+        Asset("b1", "owner-b", "b1.jpg", "2024-01-01T00:00:02Z", "2024-01-01T00:00:02Z", "image"),
+    ]
+    monkeypatch.setattr(stacker, "cluster_by_temporal_proximity", lambda _assets: [assets])
+    monkeypatch.setattr(stacker, "filter_by_visual_similarity", lambda _cluster: [assets])
+    monkeypatch.setattr(stacker, "expand_with_existing_stacks", lambda ids: ids)
+
+    assert stacker.run(assets, stack_owner_id="owner-a") == 1
+
+    assert set(client.created[0][1] + (client.created[0][0],)) == {"a1", "a2"}
+    assert "b1" not in client.created[0][1]
+    assert stacker.last_run_summary["crossUserGroupsDetected"] == 1
+    assert stacker.last_run_summary["crossUserLocalTargets"] == 1
+
+
+def test_cross_user_groups_skip_when_owner_has_only_one_asset(monkeypatch, tmp_path):
+    client = FakeClient()
+    stacker = SmartStacker(client, dry_run=False, state_file=tmp_path / "cross-user-single.json")
+    assets = [
+        Asset("a1", "owner-a", "a1.jpg", "2024-01-01T00:00:00Z", "2024-01-01T00:00:00Z", "image"),
+        Asset("b1", "owner-b", "b1.jpg", "2024-01-01T00:00:01Z", "2024-01-01T00:00:01Z", "image"),
+    ]
+    monkeypatch.setattr(stacker, "cluster_by_temporal_proximity", lambda _assets: [assets])
+    monkeypatch.setattr(stacker, "filter_by_visual_similarity", lambda _cluster: [assets])
+    monkeypatch.setattr(stacker, "expand_with_existing_stacks", lambda ids: ids)
+
+    assert stacker.run(assets, stack_owner_id="owner-a") == 0
+
+    assert client.created == []
+    assert stacker.last_run_summary["crossUserGroupsDetected"] == 1
+    assert stacker.last_run_summary["crossUserLocalTargets"] == 0
+
+
+def test_cross_user_mode_skips_same_owner_groups(monkeypatch, tmp_path):
+    client = FakeClient()
+    stacker = SmartStacker(client, dry_run=False, state_file=tmp_path / "cross-user-same-owner.json")
+    assets = [
+        Asset("a1", "owner-a", "a1.jpg", "2024-01-01T00:00:00Z", "2024-01-01T00:00:00Z", "image"),
+        Asset("a2", "owner-a", "a2.jpg", "2024-01-01T00:00:01Z", "2024-01-01T00:00:01Z", "image"),
+    ]
+    monkeypatch.setattr(stacker, "cluster_by_temporal_proximity", lambda _assets: [assets])
+    monkeypatch.setattr(stacker, "filter_by_visual_similarity", lambda _cluster: [assets])
+    monkeypatch.setattr(stacker, "expand_with_existing_stacks", lambda ids: ids)
+
+    assert stacker.run(assets, stack_owner_id="owner-a") == 0
+
+    assert client.created == []
+    assert stacker.last_run_summary["crossUserGroupsDetected"] == 0
+    assert stacker.last_run_summary["crossUserLocalTargets"] == 0
+
+
+def test_cross_user_cli_requires_unfiltered_all_users_scope(monkeypatch):
+    monkeypatch.delenv("IMMICH_USER_FILTER", raising=False)
+    base_args = ["--api-url", "http://x", "--api-key", "key", "--cross-user-shared"]
+
+    assert stacker_cli.main(base_args) == 1
+    assert stacker_cli.main(base_args + ["--all-users", "--user-filter", "owner-a"]) == 1
+    assert stacker_cli.main(base_args + ["--all-users", "--unstack-all"]) == 1
+
+
+def test_cross_user_cli_limits_assets_to_authenticated_user_and_shared_partners(monkeypatch):
+    monkeypatch.delenv("IMMICH_USER_FILTER", raising=False)
+    assets = [
+        Asset("a", "owner-a", "a.jpg", "2024-01-01T00:00:00Z", "2024-01-01T00:00:00Z", "image"),
+        Asset("b", "partner-b", "b.jpg", "2024-01-01T00:00:01Z", "2024-01-01T00:00:01Z", "image"),
+        Asset("c", "unshared-c", "c.jpg", "2024-01-01T00:00:02Z", "2024-01-01T00:00:02Z", "image"),
+    ]
+    observed = {}
+
+    class CrossUserClient:
+        def __init__(self, _api_url, _api_key):
+            pass
+
+        def get_current_user_id(self):
+            return "owner-a"
+
+        def get_shared_partner_user_ids(self):
+            return ["partner-b"]
+
+        def get_all_assets(self):
+            return assets
+
+    class CaptureStacker:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def run(self, run_assets, stack_owner_id=None):
+            observed["assets"] = run_assets
+            observed["stack_owner_id"] = stack_owner_id
+            return 0
+
+    assert stacker_cli.main(
+        ["--api-url", "http://x", "--api-key", "key", "--cross-user-shared", "--all-users"],
+        immich_client_cls=CrossUserClient,
+        stacker_cls=CaptureStacker,
+    ) == 0
+
+    assert [asset.userId for asset in observed["assets"]] == ["owner-a", "partner-b"]
+    assert observed["stack_owner_id"] == "owner-a"
+
+
+def test_cross_user_cli_requires_authenticated_user(monkeypatch, capsys):
+    monkeypatch.delenv("IMMICH_USER_FILTER", raising=False)
+
+    class UnknownUserClient:
+        def __init__(self, _api_url, _api_key):
+            pass
+
+        def get_current_user_id(self):
+            return None
+
+    assert stacker_cli.main(
+        ["--api-url", "http://x", "--api-key", "key", "--cross-user-shared", "--all-users", "--output-json"],
+        immich_client_cls=UnknownUserClient,
+    ) == 1
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "error"
+    assert payload["error"] == "Could not determine authenticated user for --cross-user-shared"
+
+
 def test_merge_replace_and_run_paths(monkeypatch, sample_assets, tmp_path):
     c = FakeClient()
     s = SmartStacker(c, dry_run=True, state_file=tmp_path / "state.json")
@@ -806,7 +931,9 @@ def test_resolve_profiles_user_filter_shorthand():
         ),
     ],
 )
-def test_resolve_profiles_rejects_invalid_config(tmp_path, config, options, message):
+def test_resolve_profiles_rejects_invalid_config(monkeypatch, tmp_path, config, options, message):
+    monkeypatch.delenv("IMMICH_API_URL", raising=False)
+    monkeypatch.delenv("IMMICH_API_KEY", raising=False)
     profile_file = tmp_path / "profiles.json"
     profile_file.write_text(json.dumps(config))
     args = stacker_cli.parse_args(["--profiles-file", str(profile_file), *options])

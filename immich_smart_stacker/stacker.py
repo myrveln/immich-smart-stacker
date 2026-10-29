@@ -344,7 +344,12 @@ class SmartStacker:
 
         return filtered
 
-    def run(self, assets: List[Asset], user_filter: str = None) -> int:
+    def run(
+        self,
+        assets: List[Asset],
+        user_filter: str = None,
+        stack_owner_id: Optional[str] = None,
+    ) -> int:
         start = time.monotonic()
         input_assets_total = len(assets)
 
@@ -367,6 +372,8 @@ class SmartStacker:
                 'candidateGroups': 0,
                 'disjointTargets': 0,
                 'stacksCreated': 0,
+                'crossUserGroupsDetected': 0,
+                'crossUserLocalTargets': 0,
                 'inaccessibleAssets': self.inaccessible_assets_count,
                 'inaccessibleByUser': dict(self.inaccessible_by_user),
                 'inaccessibleByStatus': dict(self.inaccessible_by_status),
@@ -381,6 +388,8 @@ class SmartStacker:
         temporal_clusters = self.cluster_by_temporal_proximity(assets)
 
         stacks_created = 0
+        cross_user_groups_detected = 0
+        cross_user_local_targets = 0
         candidate_groups: List[set] = []
 
         for i, cluster in enumerate(temporal_clusters, 1):
@@ -425,6 +434,28 @@ class SmartStacker:
 
             if len(expanded_assets) < 2:
                 continue
+
+            if stack_owner_id:
+                owner_ids = {asset.userId for asset in expanded_assets}
+                is_cross_user_group = len(owner_ids) > 1
+                if not is_cross_user_group:
+                    continue
+
+                cross_user_groups_detected += 1
+
+                owner_assets = [asset for asset in expanded_assets if asset.userId == stack_owner_id]
+                if len(owner_assets) < 2:
+                    continue
+
+                if is_cross_user_group:
+                    cross_user_local_targets += 1
+                    logger.info(
+                        f"Cross-user group detected; restricting this stack to "
+                        f"{len(owner_assets)} asset(s) owned by the authenticated user"
+                    )
+
+                expanded_assets = owner_assets
+                expanded_ids = [asset.id for asset in expanded_assets]
 
             if self._all_in_same_stack(expanded_assets):
                 logger.debug("Skipping group already in same stack based on stackId metadata")
@@ -492,6 +523,8 @@ class SmartStacker:
             'candidateGroups': len(candidate_groups),
             'disjointTargets': len(merged_candidate_groups),
             'stacksCreated': stacks_created,
+            'crossUserGroupsDetected': cross_user_groups_detected,
+            'crossUserLocalTargets': cross_user_local_targets,
             'inaccessibleAssets': self.inaccessible_assets_count,
             'inaccessibleByUser': dict(self.inaccessible_by_user),
             'inaccessibleByStatus': dict(self.inaccessible_by_status),

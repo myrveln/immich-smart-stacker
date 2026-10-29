@@ -117,6 +117,12 @@ def parse_args(argv: Optional[list[str]] = None):
         help='Process all users returned by the API (default auto-filters to current user)',
     )
     parser.add_argument(
+        '--cross-user-shared',
+        action='store_true',
+        default=env_bool('CROSS_USER_SHARED', False),
+        help='Detect similarities with active timeline-shared partners; only create stacks for the authenticated user',
+    )
+    parser.add_argument(
         '--temporal-window',
         type=float,
         default=float(os.getenv('TEMPORAL_WINDOW', '2.0')),
@@ -360,6 +366,18 @@ def _run_once(
         logger.error('--api-url is empty. Provide a valid Immich API URL.')
         return 1
 
+    if args.cross_user_shared and args.user_filter:
+        logger.error('--cross-user-shared cannot be used with --user-filter or IMMICH_USER_FILTER')
+        return 1
+
+    if args.cross_user_shared and not args.all_users:
+        logger.error('--cross-user-shared requires --all-users')
+        return 1
+
+    if args.cross_user_shared and args.unstack_all:
+        logger.error('--cross-user-shared cannot be used with --unstack-all')
+        return 1
+
     if args.interval_seconds < 0:
         logger.error('--interval-seconds must be >= 0')
         return 1
@@ -400,7 +418,24 @@ def _run_once(
             return 0
 
         effective_user_filter = args.user_filter
-        if not effective_user_filter and not args.all_users:
+        stack_owner_id = None
+        shared_user_ids = None
+        if args.cross_user_shared:
+            stack_owner_id = client.get_current_user_id()
+            if not stack_owner_id:
+                message = 'Could not determine authenticated user for --cross-user-shared'
+                logger.error(message)
+                record('error', error=message)
+                if args.output_json:
+                    _emit_json({'status': 'error', 'error': message})
+                return 1
+            shared_user_ids = {stack_owner_id, *client.get_shared_partner_user_ids()}
+            effective_user_filter = None
+            logger.info(
+                f'Cross-user mode: checking the authenticated user and '
+                f'{len(shared_user_ids) - 1} timeline-shared partner(s); writes remain owner-local'
+            )
+        elif not effective_user_filter and not args.all_users:
             effective_user_filter = client.get_current_user_id()
             if effective_user_filter:
                 logger.info(f"Auto-filtering to current user id: {effective_user_filter}")
@@ -408,6 +443,8 @@ def _run_once(
                 logger.info('Could not determine current user id; processing all returned assets')
 
         assets = client.get_all_assets()
+        if shared_user_ids is not None:
+            assets = [asset for asset in assets if asset.userId in shared_user_ids]
 
         if not assets:
             logger.warning('No assets found')
@@ -417,7 +454,11 @@ def _run_once(
         watermark_loaded: Optional[str] = None
         watermark_saved: Optional[str] = None
 
-        run_scope = effective_user_filter if effective_user_filter else '__all_users__'
+        run_scope = (
+            f'cross-user-shared:{stack_owner_id}'
+            if stack_owner_id
+            else effective_user_filter if effective_user_filter else '__all_users__'
+        )
         profile_name = getattr(args, 'profile_name', None)
         if profile_name:
             identity = '\0'.join((args.api_url, run_scope, profile_name))
@@ -459,7 +500,10 @@ def _run_once(
                     video_frame_fallback_timeout=args.video_frame_fallback_timeout,
                 )
 
-        stacks_created = stacker.run(assets, user_filter=effective_user_filter)
+        if stack_owner_id:
+            stacks_created = stacker.run(assets, stack_owner_id=stack_owner_id)
+        else:
+            stacks_created = stacker.run(assets, user_filter=effective_user_filter)
 
         if args.use_watermark and stacker.last_processed_max_created_dt is not None:
             _save_watermark(state_file, stacker.run_key, stacker.last_processed_max_created_dt)
