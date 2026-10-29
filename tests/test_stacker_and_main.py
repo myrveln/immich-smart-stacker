@@ -372,7 +372,7 @@ def test_cross_user_cli_limits_assets_to_authenticated_user_and_shared_partners(
     assert observed["stack_owner_id"] == "owner-a"
 
 
-def test_cross_user_cli_requires_authenticated_user(monkeypatch):
+def test_cross_user_cli_requires_authenticated_user(monkeypatch, capsys):
     monkeypatch.delenv("IMMICH_USER_FILTER", raising=False)
 
     class UnknownUserClient:
@@ -383,9 +383,12 @@ def test_cross_user_cli_requires_authenticated_user(monkeypatch):
             return None
 
     assert stacker_cli.main(
-        ["--api-url", "http://x", "--api-key", "key", "--cross-user-shared", "--all-users"],
+        ["--api-url", "http://x", "--api-key", "key", "--cross-user-shared", "--all-users", "--output-json"],
         immich_client_cls=UnknownUserClient,
     ) == 1
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "error"
+    assert payload["error"] == "Could not determine authenticated user for --cross-user-shared"
 
 
 def test_merge_replace_and_run_paths(monkeypatch, sample_assets, tmp_path):

@@ -423,8 +423,11 @@ def _run_once(
         if args.cross_user_shared:
             stack_owner_id = client.get_current_user_id()
             if not stack_owner_id:
-                logger.error('Could not determine authenticated user for --cross-user-shared')
-                record('error', error='Could not determine authenticated user for --cross-user-shared')
+                message = 'Could not determine authenticated user for --cross-user-shared'
+                logger.error(message)
+                record('error', error=message)
+                if args.output_json:
+                    _emit_json({'status': 'error', 'error': message})
                 return 1
             shared_user_ids = {stack_owner_id, *client.get_shared_partner_user_ids()}
             effective_user_filter = None

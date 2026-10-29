@@ -132,9 +132,51 @@ Notes:
 
 Set `CROSS_USER_SHARED=true` or pass `--cross-user-shared`, together with `ALL_USERS=true`. Do not set `IMMICH_USER_FILTER` in this mode. The API key needs `partner.read` in addition to the normal asset read/view and stack permissions.
 
-The app reads incoming partners from `GET /partners?direction=shared-with` and only includes partners whose `inTimeline` setting is enabled. Only mixed-owner similarity groups are considered in this mode; same-owner-only groups are skipped. When a mixed-owner group contains at least two assets belonging to the authenticated user, only those assets are stacked. Run separately with each owner's credentials to materialize that owner's local stack; Immich does not support a stack owned by another user through the current API.
+The app reads incoming partners from `GET /partners?direction=shared-with` and only includes partners whose `inTimeline` setting is enabled. A successful empty response is valid: check that the partner's **Show in timeline** setting is enabled. Only mixed-owner similarity groups are considered in this mode; same-owner-only groups are skipped. When a mixed-owner group contains at least two assets belonging to the authenticated user, only those assets are stacked. Run separately with each owner's credentials to materialize that owner's local stack; Immich does not support a stack owned by another user through the current API.
 
 JSON run summaries include `crossUserGroupsDetected` and `crossUserLocalTargets`. Use `--dry-run` first to inspect the candidate counts.
+
+Example dry-run using credentials exported in the shell. This intentionally omits `IMMICH_USER_FILTER`:
+
+```bash
+docker run --rm \
+  -e IMMICH_API_URL="$IMMICH_API_URL" \
+  -e IMMICH_API_KEY="$IMMICH_API_KEY" \
+  -e ALL_USERS=true \
+  -e CROSS_USER_SHARED=true \
+  -e DRY_RUN=true \
+  docker.io/myrveln/immich-smart-stacker:latest
+```
+
+For local runs, the equivalent command is:
+
+```bash
+env -u IMMICH_USER_FILTER CROSS_USER_SHARED=true ALL_USERS=true DRY_RUN=true \
+  .venv/bin/python -m immich_smart_stacker --cross-user-shared --all-users --dry-run \
+  --last-n-days 30 --state-file /tmp/immich-smart-stacker-dry-run-state.json
+```
+
+For separate owner credentials, use a profiles file with distinct environment variable names for each key. A separator such as `---` does not make repeated `IMMICH_API_KEY` entries usable by a shell or Compose `env_file`:
+
+```json
+{
+  "profiles": [
+    {"name": "owner-one", "apiKeyEnv": "IMMICH_OWNER_ONE_API_KEY", "allUsers": true},
+    {"name": "owner-two", "apiKeyEnv": "IMMICH_OWNER_TWO_API_KEY", "allUsers": true}
+  ]
+}
+```
+
+Set `IMMICH_API_URL` and those two key variables through your secret manager or runtime environment, then run:
+
+```bash
+env -u IMMICH_USER_FILTER ALL_USERS=true CROSS_USER_SHARED=true \
+  .venv/bin/python -m immich_smart_stacker \
+  --profiles-file /config/stacker-profiles.json \
+  --cross-user-shared --all-users --dry-run --output-json
+```
+
+Profiles run sequentially. Each run detects only that account's incoming timeline shares and writes only that account's owner-local assets.
 
 ### Batch Profiles
 
@@ -179,8 +221,9 @@ iPhones capture burst sequences with:
 3. Create a new API key with permissions:
   - `asset:view` (required for `/assets/{id}/thumbnail` access)
   - `asset:read` (metadata/search)
+  - `stack:read` (existing stack lookup)
+  - `stack:create` and `asset:update` (stack writes)
   - `partner:read` (required only for `--cross-user-shared`)
-  - `stack:*` (to create/modify stacks)
 
 ## Performance Notes
 
