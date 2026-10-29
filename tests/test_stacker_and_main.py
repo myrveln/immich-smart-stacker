@@ -728,6 +728,99 @@ def test_resolve_profiles_user_filter_shorthand():
     assert [profile.profile_name for profile in profiles] == ["user-u1", "user-u2"]
 
 
+@pytest.mark.parametrize(
+    ("config", "options", "message"),
+    [
+        ([], [], "root object"),
+        ({"profiles": []}, [], "at least one profile"),
+        ({"profiles": [None]}, [], "must be an object"),
+        ({"profiles": [{"name": "p", "unknown": True}]}, [], "unsupported field"),
+        ({"profiles": [{"name": " "}]}, [], "non-empty name"),
+        (
+            {"profiles": [{"name": "p"}, {"name": "p"}]},
+            ["--api-url", "http://x", "--api-key", "key"],
+            "Duplicate profile name",
+        ),
+        (
+            {"profiles": [{"name": "p", "apiUrl": "http://x", "apiKey": "key", "apiKeyEnv": "KEY"}]},
+            [],
+            "cannot set both",
+        ),
+        ({"profiles": [{"name": "p", "apiKeyEnv": " "}]}, [], "apiKeyEnv must be"),
+        ({"profiles": [{"name": "p", "apiKey": 42}]}, [], "apiKey must be a string"),
+        ({"profiles": [{"name": "p", "apiUrl": "", "apiKey": "key"}]}, [], "requires apiUrl"),
+        ({"profiles": [{"name": "p", "apiUrl": "http://x"}]}, [], "requires apiKey"),
+        (
+            {"profiles": [{"name": "p", "apiUrl": "http://x", "apiKey": "key", "userFilter": 7}]},
+            [],
+            "userFilter must be",
+        ),
+        (
+            {"profiles": [{"name": "p", "apiUrl": "http://x", "apiKey": "key", "userFilter": "u1", "allUsers": True}]},
+            [],
+            "cannot set both",
+        ),
+        (
+            {"profiles": [{"name": "p", "apiUrl": "http://x", "apiKey": "key", "includeVideos": "yes"}]},
+            [],
+            "includeVideos must be a boolean",
+        ),
+        (
+            {"profiles": [{"name": "p", "apiUrl": "http://x", "apiKey": "key", "temporalWindow": 0}]},
+            [],
+            "temporalWindow must be a positive number",
+        ),
+        (
+            {"profiles": [{"name": "p", "apiUrl": "http://x", "apiKey": "key", "hashThreshold": -1}]},
+            [],
+            "hashThreshold must be a non-negative integer",
+        ),
+    ],
+)
+def test_resolve_profiles_rejects_invalid_config(tmp_path, config, options, message):
+    profile_file = tmp_path / "profiles.json"
+    profile_file.write_text(json.dumps(config))
+    args = stacker_cli.parse_args(["--profiles-file", str(profile_file), *options])
+
+    with pytest.raises(ValueError, match=message):
+        stacker_cli._resolve_profiles(args)
+
+
+@pytest.mark.parametrize(
+    ("user_filters", "message"),
+    [("u1,,u2", "non-empty user IDs"), ("u1,u1", "duplicate user IDs")],
+)
+def test_resolve_profiles_rejects_invalid_user_filter_lists(user_filters, message):
+    args = stacker_cli.parse_args(["--api-url", "http://x", "--api-key", "key", "--user-filters", user_filters])
+
+    with pytest.raises(ValueError, match=message):
+        stacker_cli._resolve_profiles(args)
+
+
+def test_resolve_profiles_rejects_invalid_files(tmp_path):
+    missing_args = stacker_cli.parse_args(["--profiles-file", str(tmp_path / "missing.json")])
+    with pytest.raises(ValueError, match="Could not read profiles file"):
+        stacker_cli._resolve_profiles(missing_args)
+
+    malformed_file = tmp_path / "malformed.json"
+    malformed_file.write_text("{")
+    malformed_args = stacker_cli.parse_args(["--profiles-file", str(malformed_file)])
+    with pytest.raises(ValueError, match="Could not read profiles file"):
+        stacker_cli._resolve_profiles(malformed_args)
+
+
+def test_resolve_profiles_resets_inherited_user_filter_for_all_users(tmp_path):
+    profile_file = tmp_path / "profiles.json"
+    profile_file.write_text(json.dumps({"profiles": [{"name": "all", "allUsers": True}]}))
+    args = stacker_cli.parse_args(
+        ["--profiles-file", str(profile_file), "--api-url", "http://x", "--api-key", "key", "--user-filter", "u1"]
+    )
+
+    profiles = stacker_cli._resolve_profiles(args)
+
+    assert profiles[0].user_filter is None
+
+
 def test_main_profiles_continue_after_failure_and_aggregate(monkeypatch, tmp_path, capsys):
     profile_file = tmp_path / "profiles.json"
     profile_file.write_text(
@@ -760,7 +853,11 @@ def test_main_profiles_continue_after_failure_and_aggregate(monkeypatch, tmp_pat
     class BatchStacker:
         def __init__(self, _client, **kwargs):
             run_scopes.append(kwargs["run_scope"])
-            self.last_run_summary = {"stacksCreated": 1, "assetsAfterUserFilter": 2}
+            self.last_run_summary = {
+                "stacksCreated": 1,
+                "assetsAfterUserFilter": 2,
+                "videoEvents": {"unsupported": 1},
+            }
 
         def run(self, _assets, user_filter=None):
             return 1
@@ -778,5 +875,40 @@ def test_main_profiles_continue_after_failure_and_aggregate(monkeypatch, tmp_pat
     assert payload["failedProfiles"] == 1
     assert [profile["status"] for profile in payload["profiles"]] == ["error", "ok", "ok"]
     assert payload["summary"]["stacksCreated"] == 2
+    assert payload["summary"]["videoEvents"] == {"unsupported": 2}
     assert len(run_scopes) == 2
     assert run_scopes[0] != run_scopes[1]
+
+
+def test_main_reports_missing_api_url(monkeypatch):
+    monkeypatch.setenv("IMMICH_API_URL", "")
+
+    assert stacker_cli.main(["--api-key", "key"]) == 1
+
+
+def test_main_reports_profile_resolution_error_as_json(tmp_path, capsys):
+    profile_file = tmp_path / "profiles.json"
+    profile_file.write_text("{")
+
+    assert stacker_cli.main(["--profiles-file", str(profile_file), "--output-json"]) == 1
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "error"
+    assert payload["error"].startswith("Could not read profiles file:")
+
+
+def test_profile_batch_records_early_run_failure_and_logs_summary():
+    result = stacker_cli.main(
+        [
+            "--api-url",
+            "http://x",
+            "--api-key",
+            "key",
+            "--user-filters",
+            "u1",
+            "--interval-seconds",
+            "-1",
+        ]
+    )
+
+    assert result == 1
