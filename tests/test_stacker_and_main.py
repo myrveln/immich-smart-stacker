@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+import immich_smart_stacker.cli as stacker_cli
 from tests._module import Asset, SmartStacker, main, unstack_all
 import tests._module as mm
 
@@ -347,6 +348,8 @@ def test_unstack_all_paths():
 
 
 def test_main_paths(monkeypatch):
+    monkeypatch.delenv("IMMICH_USER_FILTER", raising=False)
+
     class MainClient(FakeClient):
         def __init__(self, api_url, api_key):
             super().__init__()
@@ -393,6 +396,33 @@ def test_main_paths(monkeypatch):
     monkeypatch.setattr(mm.module, "ImmichClient", FailClient)
     monkeypatch.setattr(mm.module.sys, "argv", ["prog", "--api-url", "http://x", "--api-key", "k"])  # nosec B106
     assert main() == 1
+
+
+def test_cli_main_processes_assets_when_current_user_is_unavailable(monkeypatch):
+    monkeypatch.delenv("IMMICH_USER_FILTER", raising=False)
+
+    class UnknownUserClient:
+        def __init__(self, _api_url, _api_key):
+            pass
+
+        def get_current_user_id(self):
+            return None
+
+        def get_all_assets(self):
+            return [Asset("a", "u1", "a.jpg", "2024-01-01T00:00:00Z", "2024-01-01T00:00:00Z", "image")]
+
+    class NoopStacker:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def run(self, _assets, user_filter=None):
+            return 0
+
+    assert stacker_cli.main(
+        ["--api-url", "http://x", "--api-key", "key"],
+        immich_client_cls=UnknownUserClient,
+        stacker_cls=NoopStacker,
+    ) == 0
 
 
 def test_main_unstack_mode(monkeypatch):

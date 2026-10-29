@@ -108,6 +108,7 @@ def test_search_metadata_get_fallback_405():
 def test_get_all_assets_branches(monkeypatch):
     c = ImmichClient("http://x", "k")
     pages = [
+        DummyResp(status_code=200, payload={"assets": {"items": [], "nextPage": None}}),
         DummyResp(
             status_code=200,
             payload={
@@ -148,6 +149,7 @@ def test_get_all_assets_sequential_page_increment(monkeypatch):
         for i in range(250)
     ]
     pages = [
+        DummyResp(status_code=200, payload={"assets": {"items": [], "nextPage": None}}),
         DummyResp(status_code=200, payload={"assets": {"items": full, "nextPage": None}}),
         DummyResp(status_code=200, payload={"assets": []}),
     ]
