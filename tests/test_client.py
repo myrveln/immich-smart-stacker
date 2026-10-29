@@ -411,6 +411,37 @@ def test_get_current_user_id_success_and_failure():
     assert c2.get_current_user_id() is None
 
 
+def test_get_shared_partner_user_ids_filters_timeline_shares():
+    c = ImmichClient("http://x", "k")
+    s = DummySession()
+    s.get_responses = [
+        DummyResp(
+            status_code=200,
+            payload=[
+                {"id": "partner-1", "inTimeline": True},
+                {"id": "partner-2", "inTimeline": False},
+                {"id": "partner-1", "inTimeline": True},
+                {"inTimeline": True},
+                None,
+            ],
+        )
+    ]
+    c.session = s
+
+    assert c.get_shared_partner_user_ids() == ["partner-1"]
+    assert s.get_calls[0][1] == {"direction": "shared-with"}
+
+
+def test_get_shared_partner_user_ids_rejects_non_list_response():
+    c = ImmichClient("http://x", "k")
+    s = DummySession()
+    s.get_responses = [DummyResp(status_code=200, payload={"partners": []})]
+    c.session = s
+
+    with pytest.raises(ValueError, match="partner response must be a list"):
+        c.get_shared_partner_user_ids()
+
+
 def test_get_asset_thumbnail_paths():
     c = ImmichClient("http://x", "k")
     s = DummySession()

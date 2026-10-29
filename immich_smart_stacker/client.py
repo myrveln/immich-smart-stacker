@@ -325,6 +325,28 @@ class ImmichClient:
             logger.debug(f"Could not resolve current user id from /users/me: {exc}")
             return None
 
+    def get_shared_partner_user_ids(self) -> List[str]:
+        """Return users actively sharing timeline-visible assets with the current user."""
+        resp = self._request(
+            'GET',
+            f"{self.api_url}/partners",
+            params={'direction': 'shared-with'},
+        )
+        resp.raise_for_status()
+        partners = resp.json()
+        if not isinstance(partners, list):
+            raise ValueError('Immich partner response must be a list')
+
+        partner_ids = []
+        for partner in partners:
+            if not isinstance(partner, dict) or partner.get('inTimeline') is not True:
+                continue
+            partner_id = partner.get('id')
+            if isinstance(partner_id, str) and partner_id:
+                partner_ids.append(partner_id)
+
+        return list(dict.fromkeys(partner_ids))
+
     def get_asset_thumbnail(
         self,
         asset_id: str,
