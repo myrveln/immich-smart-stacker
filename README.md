@@ -380,6 +380,30 @@ docker run --rm \
 - Keep `VIDEO_SKIP_PREVIEW=true` for the default fast path on missing previews.
 - If ffmpeg extraction fails, increase `VIDEO_FRAME_FALLBACK_TIMEOUT`.
 
+## Development (Local)
+
+Use local Python only for development, debugging, and tests. Regular usage should use Docker or docker-compose.
+
+### Python venv setup
+
+```bash
+# From the repository root
+python3 -m venv .venv
+source .venv/bin/activate
+
+# Install dependencies inside the venv for local development
+pip install -r requirements.txt
+
+# Module entrypoint
+python -m immich_smart_stacker --help
+```
+
+Deactivate when done:
+
+```bash
+deactivate
+```
+
 ## Comparison: [immich-stack](https://github.com/Majorfi/immich-stack) vs immich-smart-stacker
 
 | Capability | immich-stack | immich-smart-stacker |
