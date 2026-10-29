@@ -1,7 +1,9 @@
 import argparse
+import hashlib
 import json
 import logging
 import os
+import re
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -24,7 +26,6 @@ def _parse_datetime_arg(value: str, name: str) -> datetime:
 
     if parsed.tzinfo is None:
         return parsed.replace(tzinfo=timezone.utc)
-
     return parsed.astimezone(timezone.utc)
 
 
@@ -32,7 +33,6 @@ def _format_datetime_utc(value: Optional[datetime]) -> Optional[str]:
     """Return ISO-8601 UTC string with Z suffix for JSON output/state."""
     if value is None:
         return None
-
     return value.astimezone(timezone.utc).replace(microsecond=0).isoformat().replace('+00:00', 'Z')
 
 
@@ -92,14 +92,22 @@ def parse_args(argv: Optional[list[str]] = None):
     parser.add_argument(
         '--api-url',
         default=os.getenv('IMMICH_API_URL'),
-        required=os.getenv('IMMICH_API_URL') is None,
         help='Immich API URL (e.g., http://localhost:2283 or http://localhost:2283/api)',
     )
     parser.add_argument(
         '--api-key',
         default=os.getenv('IMMICH_API_KEY'),
-        required=os.getenv('IMMICH_API_KEY') is None,
         help='Immich API key',
+    )
+    parser.add_argument(
+        '--profiles-file',
+        default=os.getenv('SMART_STACKER_PROFILES_FILE'),
+        help='JSON file containing profiles to run sequentially',
+    )
+    parser.add_argument(
+        '--user-filters',
+        default=os.getenv('IMMICH_USER_FILTERS'),
+        help='Comma-separated user IDs to process with the global API credentials',
     )
     parser.add_argument('--user-filter', default=os.getenv('IMMICH_USER_FILTER'), help='Filter to specific user ID')
     parser.add_argument(
@@ -208,16 +216,148 @@ def parse_args(argv: Optional[list[str]] = None):
     return parser.parse_args(argv)
 
 
+_PROFILE_FIELDS = {
+    'name',
+    'apiUrl',
+    'apiKey',
+    'apiKeyEnv',
+    'userFilter',
+    'allUsers',
+    'temporalWindow',
+    'hashThreshold',
+    'includeVideos',
+    'videoFrameFallback',
+    'videoSkipPreview',
+}
+_PROFILE_ARG_FIELDS = {
+    'apiUrl': 'api_url',
+    'userFilter': 'user_filter',
+    'allUsers': 'all_users',
+    'temporalWindow': 'temporal_window',
+    'hashThreshold': 'hash_threshold',
+    'includeVideos': 'include_videos',
+    'videoFrameFallback': 'video_frame_fallback',
+    'videoSkipPreview': 'video_skip_preview',
+}
+
+
+def _resolve_profiles(args) -> Optional[list[argparse.Namespace]]:
+    """Resolve a profile file or user-filter list using CLI values as defaults."""
+    if args.profiles_file:
+        try:
+            config = json.loads(Path(args.profiles_file).read_text())
+        except (OSError, json.JSONDecodeError) as exc:
+            raise ValueError(f'Could not read profiles file: {exc}') from exc
+
+        if not isinstance(config, dict) or not isinstance(config.get('profiles'), list):
+            raise ValueError('Profiles file must contain a root object with a profiles array')
+        profile_specs = config['profiles']
+        if not profile_specs:
+            raise ValueError('Profiles file must contain at least one profile')
+    elif args.user_filters:
+        filters = [item.strip() for item in args.user_filters.split(',')]
+        if not filters or any(not item for item in filters):
+            raise ValueError('--user-filters must contain comma-separated, non-empty user IDs')
+        if len(set(filters)) != len(filters):
+            raise ValueError('--user-filters must not contain duplicate user IDs')
+        profile_specs = [
+            {'name': f'user-{user_filter}', 'userFilter': user_filter}
+            for user_filter in filters
+        ]
+    else:
+        return None
+
+    profiles = []
+    seen_names = set()
+    for index, spec in enumerate(profile_specs, start=1):
+        if not isinstance(spec, dict):
+            raise ValueError(f'Profile {index} must be an object')
+        unknown = set(spec) - _PROFILE_FIELDS
+        if unknown:
+            raise ValueError(f'Profile {index} has unsupported field(s): {", ".join(sorted(unknown))}')
+
+        name = spec.get('name')
+        if not isinstance(name, str) or not name.strip():
+            raise ValueError(f'Profile {index} must have a non-empty name')
+        name = name.strip()
+        if name in seen_names:
+            raise ValueError(f'Duplicate profile name: {name}')
+        seen_names.add(name)
+
+        profile_args = argparse.Namespace(**vars(args))
+        profile_args.profile_name = name
+        for field, argument in _PROFILE_ARG_FIELDS.items():
+            if field in spec:
+                setattr(profile_args, argument, spec[field])
+
+        if 'apiKey' in spec and 'apiKeyEnv' in spec:
+            raise ValueError(f'Profile {name} cannot set both apiKey and apiKeyEnv')
+        if 'apiKeyEnv' in spec:
+            env_name = spec['apiKeyEnv']
+            if not isinstance(env_name, str) or not env_name.strip():
+                raise ValueError(f'Profile {name} apiKeyEnv must be a non-empty environment variable name')
+            profile_args.api_key = os.getenv(env_name.strip())
+        elif 'apiKey' in spec:
+            api_key = spec['apiKey']
+            if not isinstance(api_key, str):
+                raise ValueError(f'Profile {name} apiKey must be a string')
+            match = re.fullmatch(r'\$\{([A-Za-z_][A-Za-z0-9_]*)\}', api_key)
+            profile_args.api_key = os.getenv(match.group(1)) if match else api_key
+
+        if 'userFilter' in spec and 'allUsers' not in spec:
+            profile_args.all_users = False
+        if profile_args.all_users and 'userFilter' not in spec:
+            profile_args.user_filter = None
+
+        if not isinstance(profile_args.api_url, str) or not profile_args.api_url.strip():
+            raise ValueError(f'Profile {name} requires apiUrl or a global --api-url value')
+        if not isinstance(profile_args.api_key, str) or not profile_args.api_key.strip():
+            raise ValueError(f'Profile {name} requires apiKey, apiKeyEnv, or a global --api-key value')
+        if profile_args.user_filter is not None and (
+            not isinstance(profile_args.user_filter, str) or not profile_args.user_filter.strip()
+        ):
+            raise ValueError(f'Profile {name} userFilter must be a non-empty string when provided')
+        if profile_args.all_users and profile_args.user_filter:
+            raise ValueError(f'Profile {name} cannot set both userFilter and allUsers')
+        for field in ('allUsers', 'includeVideos', 'videoFrameFallback', 'videoSkipPreview'):
+            if field in spec and not isinstance(spec[field], bool):
+                raise ValueError(f'Profile {name} {field} must be a boolean')
+        if 'temporalWindow' in spec and (
+            isinstance(spec['temporalWindow'], bool)
+            or not isinstance(spec['temporalWindow'], (int, float))
+            or spec['temporalWindow'] <= 0
+        ):
+            raise ValueError(f'Profile {name} temporalWindow must be a positive number')
+        if 'hashThreshold' in spec and (
+            isinstance(spec['hashThreshold'], bool)
+            or not isinstance(spec['hashThreshold'], int)
+            or spec['hashThreshold'] < 0
+        ):
+            raise ValueError(f'Profile {name} hashThreshold must be a non-negative integer')
+        profiles.append(profile_args)
+
+    return profiles
+
+
 def _run_once(
     args,
     immich_client_cls: Type[ImmichClient],
     stacker_cls: Type[SmartStacker],
     unstack_fn: Callable,
+    result: Optional[dict] = None,
 ):
+    def record(status: str, **details) -> None:
+        if result is not None:
+            result.update(status=status, **details)
+
     if not args.api_key or not args.api_key.strip():
         logger.error(
             "--api-key is empty. Provide a valid Immich API key with asset.view, asset.read, and stack:* permissions."
         )
+        return 1
+
+    if not args.api_url or not args.api_url.strip():
+        logger.error('--api-url is empty. Provide a valid Immich API URL.')
         return 1
 
     if args.interval_seconds < 0:
@@ -256,6 +396,7 @@ def _run_once(
                 user_filter=args.user_filter,
             )
             logger.info(f"Completed. Deleted {deleted} stacks.")
+            record('ok', deleted_stacks=deleted)
             return 0
 
         effective_user_filter = args.user_filter
@@ -276,6 +417,13 @@ def _run_once(
         watermark_loaded: Optional[str] = None
         watermark_saved: Optional[str] = None
 
+        run_scope = effective_user_filter if effective_user_filter else '__all_users__'
+        profile_name = getattr(args, 'profile_name', None)
+        if profile_name:
+            identity = '\0'.join((args.api_url, run_scope, profile_name))
+            profile_fingerprint = hashlib.sha256(identity.encode()).hexdigest()[:16]
+            run_scope = f'{run_scope}:profile:{profile_fingerprint}'
+
         stacker = stacker_cls(
             client,
             temporal_window=args.temporal_window,
@@ -285,7 +433,7 @@ def _run_once(
             dry_run=args.dry_run,
             include_videos=args.include_videos,
             state_file=state_file,
-            run_scope=effective_user_filter if effective_user_filter else '__all_users__',
+            run_scope=run_scope,
             video_skip_preview_404=args.video_skip_preview,
             video_frame_fallback=args.video_frame_fallback,
             video_frame_fallback_timeout=args.video_frame_fallback_timeout,
@@ -305,7 +453,7 @@ def _run_once(
                     dry_run=args.dry_run,
                     include_videos=args.include_videos,
                     state_file=state_file,
-                    run_scope=effective_user_filter if effective_user_filter else '__all_users__',
+                    run_scope=run_scope,
                     video_skip_preview_404=args.video_skip_preview,
                     video_frame_fallback=args.video_frame_fallback,
                     video_frame_fallback_timeout=args.video_frame_fallback_timeout,
@@ -331,13 +479,69 @@ def _run_once(
                 }
             )
 
+        record(
+            'ok',
+            summary=getattr(stacker, 'last_run_summary', {}),
+            watermark={'loaded': watermark_loaded, 'saved': watermark_saved},
+        )
         return 0
 
     except Exception as exc:
         logger.error(f'Fatal error: {exc}', exc_info=True)
+        record('error', error=str(exc))
         if args.output_json:
             _emit_json({'status': 'error', 'error': str(exc)})
         return 1
+
+
+def _run_profiles(
+    profiles: list[argparse.Namespace],
+    output_json: bool,
+    immich_client_cls: Type[ImmichClient],
+    stacker_cls: Type[SmartStacker],
+    unstack_fn: Callable,
+):
+    results = []
+    for profile in profiles:
+        result = {'name': profile.profile_name}
+        profile.output_json = False
+        exit_code = _run_once(
+            profile,
+            immich_client_cls=immich_client_cls,
+            stacker_cls=stacker_cls,
+            unstack_fn=unstack_fn,
+            result=result,
+        )
+        if exit_code and 'status' not in result:
+            result['status'] = 'error'
+        results.append(result)
+
+    aggregate = {}
+    for profile_result in results:
+        for key, value in profile_result.get('summary', {}).items():
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                aggregate[key] = aggregate.get(key, 0) + value
+            elif isinstance(value, dict):
+                totals = aggregate.setdefault(key, {})
+                for item, count in value.items():
+                    if isinstance(count, (int, float)) and not isinstance(count, bool):
+                        totals[item] = totals.get(item, 0) + count
+
+    failed = sum(profile_result.get('status') != 'ok' for profile_result in results)
+    if output_json:
+        _emit_json(
+            {
+                'status': 'error' if failed else 'ok',
+                'profiles': results,
+                'summary': aggregate,
+                'profileCount': len(results),
+                'failedProfiles': failed,
+            }
+        )
+    else:
+        logger.info(f'Completed {len(results)} profile(s); {failed} failed.')
+
+    return 1 if failed else 0
 
 
 def main(
@@ -355,8 +559,27 @@ def main(
         active_logger.setLevel(logging.DEBUG)
         logging.getLogger('urllib3').setLevel(logging.WARNING)
 
-    if args.interval_seconds <= 0:
+    try:
+        profiles = _resolve_profiles(args)
+    except ValueError as exc:
+        active_logger.error(str(exc))
+        if args.output_json:
+            _emit_json({'status': 'error', 'error': str(exc)})
+        return 1
+
+    def execute_iteration():
+        if profiles is not None:
+            return _run_profiles(
+                profiles,
+                output_json=args.output_json,
+                immich_client_cls=immich_client_cls,
+                stacker_cls=stacker_cls,
+                unstack_fn=unstack_fn,
+            )
         return _run_once(args, immich_client_cls=immich_client_cls, stacker_cls=stacker_cls, unstack_fn=unstack_fn)
+
+    if args.interval_seconds <= 0:
+        return execute_iteration()
 
     run_number = 0
     failures = 0
@@ -364,7 +587,7 @@ def main(
     while True:
         run_number += 1
         active_logger.info(f"Scheduled mode: starting run {run_number}")
-        exit_code = _run_once(args, immich_client_cls=immich_client_cls, stacker_cls=stacker_cls, unstack_fn=unstack_fn)
+        exit_code = execute_iteration()
         if exit_code != 0:
             failures += 1
             active_logger.warning(f"Run {run_number} failed with exit code {exit_code}")

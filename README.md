@@ -90,9 +90,11 @@ The table below maps environment variables to their equivalent command line argu
 
 | Environment Variable | CLI Argument | Default | Description |
 |---|---|---|---|
-| `IMMICH_API_URL` | `--api-url` | none | Immich API URL. Required unless `--api-url` is provided. |
-| `IMMICH_API_KEY` | `--api-key` | none | Immich API key. Required unless `--api-key` is provided. |
+| `IMMICH_API_URL` | `--api-url` | none | Immich API URL for single-profile mode; profiles can define their own URL. |
+| `IMMICH_API_KEY` | `--api-key` | none | Immich API key for single-profile mode; profiles can define or resolve their own key. |
 | `IMMICH_USER_FILTER` | `--user-filter` | empty | Restrict processing to one user ID. |
+| `SMART_STACKER_PROFILES_FILE` | `--profiles-file` | empty | JSON file containing profiles to run sequentially. |
+| `IMMICH_USER_FILTERS` | `--user-filters` | empty | Comma-separated user IDs to process with the global API credentials. |
 | `ALL_USERS` | `--all-users` | false | Process all users instead of auto-scoping to current user. |
 | `TEMPORAL_WINDOW` | `--temporal-window` | 2.0 | Temporal grouping window in seconds for burst clustering. |
 | `SINCE` | `--since` | empty | ISO-8601 lower bound timestamp. |
@@ -122,6 +124,35 @@ Notes:
 - `--use-watermark` only loads a watermark automatically when `--since` and `--last-n-days` are not set.
 - Existing stacks are not treated as immutable: if a new run finds a larger matching group that intersects an existing stack, the script will merge/extend the stack.
 - In `--unstack-all` mode: with `--user-filter <userId>`, only that user's stacks are deleted; without `--user-filter`, stacks for all users are deleted.
+
+### Batch Profiles
+
+Use a profiles file to run several credential and user-scope combinations sequentially in one process. The file must contain a non-empty `profiles` array:
+
+```json
+{
+  "profiles": [
+    {
+      "name": "family-library",
+      "apiUrl": "http://immich-server:2283/api",
+      "apiKeyEnv": "IMMICH_FAMILY_API_KEY",
+      "userFilter": "user-id-1",
+      "temporalWindow": 2.0
+    },
+    {
+      "name": "personal-library",
+      "apiUrl": "http://immich-server:2283/api",
+      "apiKey": "${IMMICH_PERSONAL_API_KEY}",
+      "userFilter": "user-id-2",
+      "includeVideos": true
+    }
+  ]
+}
+```
+
+Run with `--profiles-file /config/stacker-profiles.json` or set `SMART_STACKER_PROFILES_FILE`. Profiles can override `apiUrl`, `userFilter`, `allUsers`, `temporalWindow`, `hashThreshold`, `includeVideos`, `videoFrameFallback`, and `videoSkipPreview`; omitted values use the corresponding global configuration. API keys can be supplied through `apiKeyEnv` or an exact `${ENV_VAR}` reference in `apiKey`. Prefer environment variables or a secret manager over plaintext keys in the file.
+
+Profile mode takes precedence over `--user-filters`. The shorthand accepts a comma-separated list and uses the global API URL and key. Profiles run sequentially; a failed profile is reported but does not stop later profiles. JSON output contains per-profile outcomes and aggregate counters. Each profile's idempotency and watermark state is isolated using its URL, resolved user scope, and profile name.
 
 ### iPhone Burst Patterns
 
