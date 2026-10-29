@@ -148,15 +148,7 @@ docker run --rm \
   docker.io/myrveln/immich-smart-stacker:latest
 ```
 
-For local runs, the equivalent command is:
-
-```bash
-env -u IMMICH_USER_FILTER CROSS_USER_SHARED=true ALL_USERS=true DRY_RUN=true \
-  .venv/bin/python -m immich_smart_stacker --cross-user-shared --all-users --dry-run \
-  --last-n-days 30 --state-file /tmp/immich-smart-stacker-dry-run-state.json
-```
-
-For separate owner credentials, use a profiles file with distinct environment variable names for each key. A separator such as `---` does not make repeated `IMMICH_API_KEY` entries usable by a shell or Compose `env_file`:
+For separate owner credentials, use a profiles file with distinct environment variable names for each key:
 
 ```json
 {
@@ -167,13 +159,20 @@ For separate owner credentials, use a profiles file with distinct environment va
 }
 ```
 
-Set `IMMICH_API_URL` and those two key variables through your secret manager or runtime environment, then run:
+Set `IMMICH_API_URL` and those two key variables through your secret manager or runtime environment. Mount the profiles file read-only and persistent storage for state:
 
 ```bash
-env -u IMMICH_USER_FILTER ALL_USERS=true CROSS_USER_SHARED=true \
-  .venv/bin/python -m immich_smart_stacker \
-  --profiles-file /config/stacker-profiles.json \
-  --cross-user-shared --all-users --dry-run --output-json
+docker run --rm \
+  -v "$PWD/stacker-profiles.json:/config/stacker-profiles.json:ro" \
+  -v "$PWD/data:/data" \
+  -e IMMICH_API_URL="$IMMICH_API_URL" \
+  -e IMMICH_OWNER_ONE_API_KEY="$IMMICH_OWNER_ONE_API_KEY" \
+  -e IMMICH_OWNER_TWO_API_KEY="$IMMICH_OWNER_TWO_API_KEY" \
+  -e SMART_STACKER_PROFILES_FILE=/config/stacker-profiles.json \
+  -e ALL_USERS=true \
+  -e CROSS_USER_SHARED=true \
+  -e DRY_RUN=true \
+  docker.io/myrveln/immich-smart-stacker:latest
 ```
 
 Profiles run sequentially. Each run detects only that account's incoming timeline shares and writes only that account's owner-local assets.
@@ -380,30 +379,6 @@ docker run --rm \
 - Enable both `INCLUDE_VIDEOS=true` and `VIDEO_FRAME_FALLBACK=true`.
 - Keep `VIDEO_SKIP_PREVIEW=true` for the default fast path on missing previews.
 - If ffmpeg extraction fails, increase `VIDEO_FRAME_FALLBACK_TIMEOUT`.
-
-## Development (Local)
-
-Use local Python only for development, debugging, and tests. Regular usage should use Docker or docker-compose.
-
-### Python venv setup
-
-```bash
-# From the repository root
-python3 -m venv .venv
-source .venv/bin/activate
-
-# Install dependencies inside the venv for local development
-pip install -r requirements.txt
-
-# Module entrypoint
-python -m immich_smart_stacker --help
-```
-
-Deactivate when done:
-
-```bash
-deactivate
-```
 
 ## Comparison: [immich-stack](https://github.com/Majorfi/immich-stack) vs immich-smart-stacker
 
