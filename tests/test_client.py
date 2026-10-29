@@ -226,6 +226,7 @@ def test_search_metadata_400_error_logging_json_parse_failure():
 
 def test_extract_to_int_to_asset_helpers():
     assert ImmichClient._extract_assets_page({"assets": {"items": [1], "nextPage": 2}}) == ([1], 2)
+    assert ImmichClient._extract_assets_page({"assets": {"items": [1], "nextCursor": "abc"}}) == ([1], "abc")
     assert ImmichClient._extract_assets_page({"assets": [1]}) == ([1], None)
     assert ImmichClient._extract_assets_page({"assets": "x"}) == ([], None)
     assert ImmichClient._to_int("4", 1) == 4
@@ -256,9 +257,9 @@ def test_get_all_assets_pagination_and_filtering(monkeypatch):
     c = ImmichClient("http://x", "k")
 
     pages = [
+        ({"assets": {"items": [{"id": "ignored", "fileCreatedAt": "2024-01-01T00:00:00Z", "ownerId": "u1", "type": "IMAGE"}], "nextPage": "2"}}, 200),
         ({"assets": {"items": [{"id": "1", "fileCreatedAt": "2024-01-01T00:00:00Z", "ownerId": "u1", "type": "IMAGE"}], "nextPage": "2"}}, 200),
         ({"assets": {"items": [{"id": "2", "fileCreatedAt": "2024-01-01T00:00:01Z", "ownerId": "u2", "type": "IMAGE"}], "nextPage": 0}}, 200),
-        ({"assets": []}, 200),
     ]
 
     def fake_search(payload):
@@ -268,6 +269,131 @@ def test_get_all_assets_pagination_and_filtering(monkeypatch):
     monkeypatch.setattr(c, "_search_metadata", fake_search)
     assets = c.get_all_assets(user_id="u1")
     assert [a.id for a in assets] == ["1"]
+
+
+def test_get_all_assets_uses_cursor_pagination(monkeypatch):
+    c = ImmichClient("http://x", "k")
+    payloads = []
+    responses = [
+        {"assets": {"items": [{"id": "1", "fileCreatedAt": "2024-01-01T00:00:00Z", "ownerId": "u1"}], "nextCursor": "c2"}},
+        {"assets": {"items": [{"id": "2", "fileCreatedAt": "2024-01-01T00:00:01Z", "ownerId": "u1"}], "nextCursor": None}},
+    ]
+
+    def fake_search(payload):
+        payloads.append(payload)
+        return DummyResp(status_code=200, payload=responses.pop(0))
+
+    monkeypatch.setattr(c, "_search_metadata", fake_search)
+
+    assets = c.get_all_assets()
+
+    assert [asset.id for asset in assets] == ["1", "2"]
+    assert payloads[0]["size"] == 250
+    assert payloads[0]["filter"] == {
+        "trashedAt": {"eq": None},
+        "visibility": {"ne": "locked"},
+    }
+    assert payloads[0]["orderBy"] == {"field": "fileCreatedAt", "direction": "desc"}
+    assert "cursor" not in payloads[0]
+    assert payloads[1]["cursor"] == "c2"
+    assert "page" not in payloads[1]
+
+
+def test_get_all_assets_falls_back_to_legacy_pagination(monkeypatch):
+    c = ImmichClient("http://x", "k")
+    payloads = []
+    responses = [
+        {"assets": {"items": [{"id": "1", "fileCreatedAt": "2024-01-01T00:00:00Z", "ownerId": "u1"}], "nextPage": "2"}},
+        {"assets": {"items": [{"id": "2", "fileCreatedAt": "2024-01-01T00:00:01Z", "ownerId": "u1"}], "nextPage": None}},
+    ]
+
+    def fake_search(payload):
+        payloads.append(payload)
+        if len(payloads) == 1:
+            raise mm.module.requests.HTTPError(response=DummyResp(status_code=400))
+        return DummyResp(status_code=200, payload=responses.pop(0))
+
+    monkeypatch.setattr(c, "_search_metadata", fake_search)
+
+    assets = c.get_all_assets()
+
+    assert [asset.id for asset in assets] == ["1", "2"]
+    assert "cursor" not in payloads[1]
+    assert payloads[1]["page"] == 1
+    assert payloads[2]["page"] == 2
+
+
+def test_get_all_assets_restarts_legacy_pagination_when_cursor_is_ignored(monkeypatch):
+    c = ImmichClient("http://x", "k")
+    payloads = []
+    responses = [
+        {"assets": {"items": [{"id": "ignored", "fileCreatedAt": "2024-01-01T00:00:00Z", "ownerId": "u1"}], "nextPage": "2"}},
+        {"assets": {"items": [{"id": "1", "fileCreatedAt": "2024-01-01T00:00:00Z", "ownerId": "u1"}], "nextPage": "2"}},
+        {"assets": {"items": [{"id": "2", "fileCreatedAt": "2024-01-01T00:00:01Z", "ownerId": "u1"}], "nextPage": None}},
+    ]
+
+    def fake_search(payload):
+        payloads.append(payload)
+        return DummyResp(status_code=200, payload=responses.pop(0))
+
+    monkeypatch.setattr(c, "_search_metadata", fake_search)
+
+    assets = c.get_all_assets()
+
+    assert [asset.id for asset in assets] == ["1", "2"]
+    assert "cursor" not in payloads[0]
+    assert "filter" in payloads[0]
+    assert payloads[1]["page"] == 1
+    assert payloads[2]["page"] == 2
+
+
+def test_get_all_assets_rejects_repeated_cursor(monkeypatch):
+    c = ImmichClient("http://x", "k")
+    payload = {
+        "assets": {
+            "items": [{"id": "1", "fileCreatedAt": "2024-01-01T00:00:00Z", "ownerId": "u1"}],
+            "nextCursor": "repeated",
+        }
+    }
+    monkeypatch.setattr(c, "_search_metadata", lambda _payload: DummyResp(payload=payload))
+
+    with pytest.raises(RuntimeError, match="repeated nextCursor"):
+        c.get_all_assets()
+
+
+def test_get_all_assets_rejects_missing_cursor_after_cursor_pagination(monkeypatch):
+    c = ImmichClient("http://x", "k")
+    responses = [
+        {"assets": {"items": [{"id": "1", "fileCreatedAt": "2024-01-01T00:00:00Z", "ownerId": "u1"}], "nextCursor": "c2"}},
+        {"assets": {"items": [{"id": "2", "fileCreatedAt": "2024-01-01T00:00:01Z", "ownerId": "u1"}], "nextPage": None}},
+    ]
+    monkeypatch.setattr(c, "_search_metadata", lambda _payload: DummyResp(payload=responses.pop(0)))
+
+    with pytest.raises(RuntimeError, match="omitted nextCursor"):
+        c.get_all_assets()
+
+
+def test_get_all_assets_rejects_invalid_cursor(monkeypatch):
+    c = ImmichClient("http://x", "k")
+    payload = {
+        "assets": {
+            "items": [{"id": "1", "fileCreatedAt": "2024-01-01T00:00:00Z", "ownerId": "u1"}],
+            "nextCursor": 2,
+        }
+    }
+    monkeypatch.setattr(c, "_search_metadata", lambda _payload: DummyResp(payload=payload))
+
+    with pytest.raises(RuntimeError, match="invalid nextCursor"):
+        c.get_all_assets()
+
+
+def test_get_all_assets_reraises_non_bad_request_cursor_error(monkeypatch):
+    c = ImmichClient("http://x", "k")
+    error = mm.module.requests.HTTPError(response=DummyResp(status_code=500))
+    monkeypatch.setattr(c, "_search_metadata", lambda _payload: (_ for _ in ()).throw(error))
+
+    with pytest.raises(mm.module.requests.HTTPError):
+        c.get_all_assets()
 
 
 def test_get_current_user_id_success_and_failure():

@@ -131,13 +131,13 @@ class ImmichClient:
 
     @staticmethod
     def _extract_assets_page(response_json: Dict) -> Tuple[List[Dict], Optional[Any]]:
-        """Return (items, next_page) from different Immich response shapes."""
+        """Return items and the continuation token from either response shape."""
         assets_field = response_json.get('assets', [])
 
         if isinstance(assets_field, dict):
             items = assets_field.get('items', [])
-            next_page = assets_field.get('nextPage')
-            return items, next_page
+            continuation = assets_field.get('nextCursor') if 'nextCursor' in assets_field else assets_field.get('nextPage')
+            return items, continuation
 
         if isinstance(assets_field, list):
             return assets_field, None
@@ -212,17 +212,54 @@ class ImmichClient:
         """Fetch all assets from Immich."""
         logger.info(f"Fetching assets from {self.api_url}...")
         assets = []
+        cursor: Optional[str] = None
+        seen_cursors = set()
         page: Any = 1
         take = 250
+        use_cursor = True
 
         while True:
-            payload = {
-                'page': page,
-                'size': take,
-            }
-            resp = self._search_metadata(payload)
+            if use_cursor:
+                payload = {
+                    'size': take,
+                    'filter': {
+                        'trashedAt': {'eq': None},
+                        'visibility': {'ne': 'locked'},
+                    },
+                    'orderBy': {'field': 'fileCreatedAt', 'direction': 'desc'},
+                }
+                if cursor is not None:
+                    payload['cursor'] = cursor
+            else:
+                payload = {'page': page, 'size': take}
+
+            try:
+                resp = self._search_metadata(payload)
+            except requests.HTTPError as exc:
+                if (
+                    use_cursor
+                    and cursor is None
+                    and exc.response is not None
+                    and exc.response.status_code == 400
+                ):
+                    logger.debug('Cursor metadata search is unsupported; falling back to page/size pagination')
+                    use_cursor = False
+                    continue
+                raise
+
             response_json = resp.json()
-            batch, next_page = self._extract_assets_page(response_json)
+            batch, continuation = self._extract_assets_page(response_json)
+            response_assets = response_json.get('assets')
+            has_cursor_field = isinstance(response_assets, dict) and 'nextCursor' in response_assets
+            next_cursor = continuation if has_cursor_field else None
+            next_page = continuation if not has_cursor_field else None
+            if use_cursor and not has_cursor_field:
+                if cursor is not None:
+                    raise RuntimeError('Immich metadata search omitted nextCursor after cursor pagination began')
+                logger.debug('Metadata search did not return nextCursor; restarting with page/size pagination')
+                use_cursor = False
+                continue
+
             if not batch:
                 break
 
@@ -242,6 +279,17 @@ class ImmichClient:
 
             if len(assets) % 1000 == 0 or len(batch) < take:
                 logger.debug(f"Fetched {len(assets)} assets so far...")
+
+            if use_cursor:
+                if next_cursor is None:
+                    break
+                if not isinstance(next_cursor, str) or not next_cursor:
+                    raise RuntimeError('Immich metadata search returned an invalid nextCursor')
+                if next_cursor in seen_cursors:
+                    raise RuntimeError('Immich metadata search returned a repeated nextCursor')
+                seen_cursors.add(next_cursor)
+                cursor = next_cursor
+                continue
 
             if next_page is not None:
                 next_page_int = self._to_int(next_page, default=0)
